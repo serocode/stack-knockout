@@ -1,0 +1,26 @@
+{
+  "name": "@tk/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc -p . && vite build",
+    "preview": "vite preview --host",
+    "dev:https": "TK_HTTPS=1 vite --host"
+  },
+  "dependencies": {
+    "@tk/coordinator": "workspace:*",
+    "@tk/engine": "workspace:*",
+    "@tk/net": "workspace:*",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "vite": "^8.3.5",
+    "@vitejs/plugin-basic-ssl": "^2.3.0"
+  }
+}
