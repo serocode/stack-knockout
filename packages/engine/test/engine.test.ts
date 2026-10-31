@@ -106,7 +106,7 @@ describe("attack table", () => {
     expect(computeAttack({ ...base, lines: 4, perfectClear: true })).toBe(14);
   });
 
-  it("tracks back-to-back across tetrises", () => {
+  it("tracks back-to-back across 4-line clears", () => {
     const sim = simWith("I");
     const b = sim.s.board;
     for (let y = 36; y < 40; y++) fill(b, y, [9]);

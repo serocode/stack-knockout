@@ -40,7 +40,7 @@ const STAT_LABELS: [keyof ReturnType<typeof useProfile>["stats"], string][] = [
   ["kos", "Knockouts"],
   ["bestScore", "Best score"],
   ["lines", "Lines"],
-  ["tetrises", "4-line clears"],
+  ["quads", "4-line clears"],
   ["tspins", "T-Spins"],
   ["perfectClears", "Perfect clears"],
   ["maxCombo", "Best combo"],

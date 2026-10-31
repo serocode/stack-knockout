@@ -30,10 +30,10 @@ export function LogoMark({ size = 40, className = "" }: { size?: number; classNa
 
 export function Logo({ size = "lg" }: { size?: "sm" | "lg" }) {
   return (
-    <div className={`logo logo-${size}`} role="img" aria-label="Tetris Knockout">
+    <div className={`logo logo-${size}`} role="img" aria-label="Stack Knockout">
       <LogoMark size={size === "lg" ? 76 : 30} className="logo-anim" />
       <div className="wordmark">
-        <span className="kicker">TETRIS</span>
+        <span className="kicker">STACK</span>
         <span className="word">KNOCKOUT</span>
       </div>
     </div>

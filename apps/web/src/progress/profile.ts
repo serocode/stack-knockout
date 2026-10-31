@@ -15,7 +15,7 @@ export interface Stats {
   wins: number;
   kos: number;
   lines: number;
-  tetrises: number;
+  quads: number;
   tspins: number;
   tspinTriples: number;
   perfectClears: number;
@@ -47,7 +47,7 @@ export interface Achievement {
 export const ACHIEVEMENTS: Achievement[] = [
   { id: "first-game", name: "Warm-up", desc: "Finish your first game", icon: "🎮", test: (p) => p.stats.games >= 1 },
   { id: "first-line", name: "Clean sweep", desc: "Clear your first line", icon: "🧹", test: (p) => p.stats.lines >= 1 },
-  { id: "tetris", name: "Four at once", desc: "Clear 4 lines with one piece", icon: "🧱", test: (p) => p.stats.tetrises >= 1 },
+  { id: "quad", name: "Four at once", desc: "Clear 4 lines with one piece", icon: "🧱", test: (p) => p.stats.quads >= 1 },
   { id: "tspin", name: "Spin doctor", desc: "Clear lines with a T-Spin", icon: "🌀", test: (p) => p.stats.tspins >= 1 },
   { id: "tspin-triple", name: "Triple threat", desc: "Land a T-Spin Triple", icon: "🌪️", test: (p) => p.stats.tspinTriples >= 1 },
   { id: "perfect", name: "Spotless", desc: "Perfect clear: empty the whole board", icon: "✨", test: (p) => p.stats.perfectClears >= 1 },
@@ -64,20 +64,24 @@ export const ACHIEVEMENTS: Achievement[] = [
 ];
 
 const EMPTY_STATS: Stats = {
-  games: 0, wins: 0, kos: 0, lines: 0, tetrises: 0, tspins: 0, tspinTriples: 0, perfectClears: 0,
+  games: 0, wins: 0, kos: 0, lines: 0, quads: 0, tspins: 0, tspinTriples: 0, perfectClears: 0,
   maxCombo: 0, maxB2b: 0, bestScore: 0, bestMatchPlayers: 0, attackSent: 0,
 };
 
 const KEY = "tk.profile";
 const num = (v: unknown, max = 1e12) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.min(max, Math.floor(v)) : 0);
 
-function sanitize(raw: unknown): Profile {
+export function sanitizeProfile(raw: unknown): Profile {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const s = (r.stats && typeof r.stats === "object" ? r.stats : {}) as Record<string, unknown>;
+  if (s.quads === undefined && s.tetrises !== undefined) s.quads = s.tetrises; // pre-rename saves
   const stats = Object.fromEntries(Object.keys(EMPTY_STATS).map((k) => [k, num(s[k])])) as unknown as Stats;
   const ach: Record<string, number> = {};
   if (r.achievements && typeof r.achievements === "object") {
-    for (const [k, v] of Object.entries(r.achievements as Record<string, unknown>)) if (ACHIEVEMENTS.some((a) => a.id === k)) ach[k] = num(v);
+    for (const [key, v] of Object.entries(r.achievements as Record<string, unknown>)) {
+      const k = key === "tetris" ? "quad" : key; // pre-rename saves
+      if (ACHIEVEMENTS.some((a) => a.id === k)) ach[k] = num(v, 1e15); // ms timestamps exceed the default cap
+    }
   }
   const counted = Array.isArray(r.counted) ? (r.counted as unknown[]).filter((x): x is string => typeof x === "string" && x.length <= 64).slice(-50) : [];
   return { version: 1, careerScore: num(r.careerScore), stats, achievements: ach, counted };
@@ -85,9 +89,9 @@ function sanitize(raw: unknown): Profile {
 
 function load(): Profile {
   try {
-    return sanitize(JSON.parse(localStorage.getItem(KEY) ?? "{}"));
+    return sanitizeProfile(JSON.parse(localStorage.getItem(KEY) ?? "{}"));
   } catch {
-    return sanitize({});
+    return sanitizeProfile({});
   }
 }
 
@@ -152,7 +156,7 @@ export function recordLock(r: { lines: number; tspin: "none" | "mini" | "full"; 
   if (r.lines === 0) return;
   const s = { ...current.stats };
   s.lines += r.lines;
-  if (r.lines === 4) s.tetrises++;
+  if (r.lines === 4) s.quads++;
   if (r.tspin !== "none") s.tspins++;
   if (r.tspin === "full" && r.lines === 3) s.tspinTriples++;
   if (r.perfectClear) s.perfectClears++;
@@ -177,7 +181,7 @@ export function recordGame(g: { id: string; score: number; kos?: number; won?: b
 }
 
 export function resetProfile(): void {
-  save(sanitize({}));
+  save(sanitizeProfile({}));
 }
 
 // Keep tabs in sync.

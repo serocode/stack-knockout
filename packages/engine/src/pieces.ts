@@ -1,5 +1,5 @@
 /**
- * Tetromino definitions and SRS kick tables (Tetris Guideline).
+ * Tetromino definitions and SRS kick tables (the standard Super Rotation System).
  * Coordinates: x grows right, y grows DOWN. Rotation states: 0, R(1), 2, L(3).
  */
 export const PIECE_TYPES = ["I", "O", "T", "S", "Z", "J", "L"] as const;

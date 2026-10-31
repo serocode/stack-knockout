@@ -312,7 +312,7 @@ function Lobby({ coord, st, creds, mode, onCustomize }: { coord: Coordinator; st
                 window.setTimeout(() => setCopied(false), 1500);
               };
               try {
-                if (navigator.share) return void (await navigator.share({ title: "Tetris Knockout", url: link }));
+                if (navigator.share) return void (await navigator.share({ title: "Stack Knockout", url: link }));
                 if (navigator.clipboard) {
                   await navigator.clipboard.writeText(link);
                   return flash();

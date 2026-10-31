@@ -1,4 +1,4 @@
-# Tetris Knockout — Architecture
+# Stack Knockout — Architecture
 
 Backend-free, peer-to-peer, up to six players, with automatic host migration.
 Static frontend on Vercel; no game server, no database, no accounts.
@@ -10,7 +10,7 @@ records the decisions, limitations and third-party costs required by §15.
 
 ## 1. Existing project (spec §14.1–2)
 
-`~/Game Dev` contained only the `gamedev` skill bundle — no prior Tetris code —
+`~/Game Dev` contained only the `gamedev` skill bundle — no prior game code —
 so this is a fresh build. The gamedev router has no catalog skill for a custom
 TypeScript Canvas engine, so it was treated as a custom engine and the work
 was bound to verified local APIs (our own engine), per the router's
@@ -333,7 +333,7 @@ the lower layers.
 * **Effects:** one overlay canvas (`fx/fx.ts`): particle bursts per effect skin,
   attack projectiles flying from attacker to target board, KO bursts, row
   flashes, and decaying "trauma" shake on board elements. Feedback is tiered by
-  importance (lock < single/double < triple/mini/combo < tetris/T-spin/B2B <
+  importance (lock < single/double < triple/mini/combo < 4-line clear/T-spin/B2B <
   perfect clear/KO). Visual only: never pauses or alters the simulation.
 * **Audio:** WebAudio synthesis only (no asset files): SFX bus + music bus →
   master → limiter. Perceptual volume curve, small pitch variation on repeats,

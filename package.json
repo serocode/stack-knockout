@@ -1,5 +1,5 @@
 {
-  "name": "tetris-knockout",
+  "name": "stack-knockout",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.0",

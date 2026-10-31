@@ -13,7 +13,7 @@ const hex = (b: ArrayBuffer) => Buffer.from(b).toString("hex");
 
 describe("WebCrypto shim matches native WebCrypto", () => {
   it("digest SHA-1 / SHA-256 (string and object algorithm forms)", async () => {
-    for (const msg of ["", "abc", "trystero:tetris-knockout-v1:tk1-ABCDEF", "x".repeat(1000)]) {
+    for (const msg of ["", "abc", "trystero:stack-knockout-v1:tk1-ABCDEF", "x".repeat(1000)]) {
       expect(hex(await subtleShim.digest("SHA-1", enc(msg)))).toBe(hex(await native.digest("SHA-1", enc(msg))));
       expect(hex(await subtleShim.digest({ name: "SHA-256" }, enc(msg)))).toBe(hex(await native.digest("SHA-256", enc(msg))));
     }

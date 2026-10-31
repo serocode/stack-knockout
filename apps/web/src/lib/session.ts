@@ -16,7 +16,7 @@ export interface Session {
   close: () => void;
 }
 
-const APP_ID = "tetris-knockout-v1";
+const APP_ID = "stack-knockout-v1";
 
 /**
  * Wires transport -> mesh -> coordinator. "online" uses WebRTC with Trystero's

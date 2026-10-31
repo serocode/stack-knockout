@@ -1,6 +1,6 @@
-# Tetris Knockout
+# Stack Knockout
 
-Six-player peer-to-peer Tetris knockout. React + TypeScript + Canvas, WebRTC
+Six-player peer-to-peer falling-block knockout. React + TypeScript + Canvas, WebRTC
 mesh via Trystero, automatic host migration. No game server, no database.
 
 See **ARCHITECTURE.md** for the networking design, migration protocol,

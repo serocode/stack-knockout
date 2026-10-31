@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isCosmetics } from "@tk/coordinator";
 import { AVATARS, BACKGROUNDS, BLOCK_SKINS, DEFAULT_COSMETICS, EFFECTS, FRAMES, GARBAGES, GHOSTS, PRESET_PALETTES, TIERS, enforceUnlocks, fromWire, isUnlocked, sanitizeCosmetics, tierForScore, tierFromWire, toWire, type Cosmetics } from "../src/cosmetics/catalog";
-import { ACHIEVEMENTS, getProfile, onUnlock, recordGame, recordLock, resetProfile, type UnlockEvent } from "../src/progress/profile";
+import { ACHIEVEMENTS, getProfile, onUnlock, recordGame, recordLock, resetProfile, sanitizeProfile, type UnlockEvent } from "../src/progress/profile";
 
 describe("cosmetics wire format", () => {
   it("every combination round-trips and fits the coordinator's opaque cosmetics limits", () => {
@@ -81,7 +81,7 @@ describe("career progression", () => {
     const ach = new Set(events.filter((e) => e.kind === "achievement").map((e) => (e.kind === "achievement" ? e.achievement.id : "")));
     for (const id of ["first-game", "first-win", "survivor", "first-ko", "score10k"]) expect(ach.has(id)).toBe(true);
     recordLock({ lines: 4, tspin: "none", perfectClear: true, combo: 5, b2bBonus: true }, 4);
-    expect(getProfile().stats.tetrises).toBe(1);
+    expect(getProfile().stats.quads).toBe(1);
     expect(getProfile().achievements.perfect).toBeGreaterThan(0);
     expect(getProfile().achievements.b2b3).toBeGreaterThan(0);
     const before = events.length;
@@ -90,5 +90,14 @@ describe("career progression", () => {
     expect(ACHIEVEMENTS.length).toBeGreaterThanOrEqual(15);
     off();
     resetProfile();
+  });
+});
+
+describe("profile migration", () => {
+  it("keeps 4-line stats and the achievement from saves made before the rename", () => {
+    const p = sanitizeProfile({ careerScore: 12_000, stats: { tetrises: 7, lines: 90 }, achievements: { tetris: 1700000000000, bogus: 1 } });
+    expect(p.stats.quads).toBe(7);
+    expect(p.stats.lines).toBe(90);
+    expect(p.achievements).toEqual({ quad: 1700000000000 });
   });
 });

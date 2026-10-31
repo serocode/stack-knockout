@@ -7,7 +7,7 @@ import type { Effect } from "../cosmetics/catalog";
  * the simulation, and scales down with reduce-motion.
  *
  * Importance tiers (game-feel guidance): 1 small (single/double, lock),
- * 2 medium (triple, mini, combo), 3 large (tetris, T-spin, B2B),
+ * 2 medium (triple, mini, combo), 3 large (4-line clear, T-spin, B2B),
  * 4 huge (perfect clear, KO).
  */
 export type Tier = 1 | 2 | 3 | 4;
