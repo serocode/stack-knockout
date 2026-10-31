@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "pnpm --filter @tk/web dev",
     "dev:https": "pnpm --filter @tk/web dev:https",
-    "build": "pnpm --filter @tk/web build",
+    "build": "pnpm --filter @tk/web build && node scripts/copy-dist.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p packages/engine && tsc -p packages/net && tsc -p packages/coordinator && tsc -p apps/web"

@@ -14,7 +14,7 @@ pnpm test        # engine, networking, migration scenarios, chaos, module bounda
 pnpm typecheck
 pnpm dev         # http://localhost:5173, and http://<your-LAN-IP>:5173 for phones
 pnpm dev:https   # optional: self-signed https dev server
-pnpm build       # static output in apps/web/dist
+pnpm build       # static output in dist (copied from apps/web/dist)
 ```
 
 Longer chaos run: `CHAOS_SEEDS=100 pnpm vitest run packages/coordinator/test/chaos.test.ts`
@@ -40,9 +40,10 @@ data), add a TURN server under Settings (Metered's free tier works).
 
 ## Deploy to Vercel
 
-Import the repository with the project root at the repo root; `vercel.json`
-builds `apps/web` and serves `apps/web/dist`. No environment variables or
-functions are needed.
+Import the repository and leave **Root Directory** empty (the repo root).
+`vercel.json` runs `pnpm build`, which builds `apps/web` and copies the output
+to `dist`. Framework preset "Other" or "Vite" both work; leave the build and
+output overrides off. No environment variables or functions are needed.
 
 ## Customize
 
