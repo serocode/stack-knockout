@@ -1,7 +1,9 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { LiveController, type Command, type LockResult, type PiecePos, type Placement, type PlayerSim } from "@tk/engine";
 import { audio } from "../audio/audio";
+import { steerTo } from "../coach/coach";
 import { fx, tierFor, vibrate } from "../fx/fx";
+import { isTouchDevice } from "../lib/device";
 import { InputHandler } from "../lib/input";
 import { usePrefs } from "../lib/prefs";
 import { recordLock } from "../progress/profile";
@@ -26,18 +28,36 @@ interface Props {
   children?: ReactNode;
   /** data-board id so attack projectiles can find this board. */
   boardId?: string;
+  /** Coaching suggestions for the current piece, newest first (the first is what G takes). */
+  hints?: PlayfieldHint[];
+  onHintUsed?: (h: PlayfieldHint) => void;
+}
+
+export interface PlayfieldHint {
+  /** Coach's player id. */
+  coach: string;
+  /** Piece index the suggestion is for. */
+  idx: number;
+  usedHold: boolean;
+  piece: PiecePos;
+  color: string;
+  /** e.g. "🦊 Sam" */
+  label: string;
 }
 
 /** The local player's board: owns input, the falling-piece controller, effects and the render loop. */
-export function Playfield({ sim, getSim, paused, gravityMs, cellSize, incomingQueued, incomingLanding, onLock, onPiece, overlay, children, boardId }: Props) {
+export function Playfield({ sim, getSim, paused, gravityMs, cellSize, incomingQueued, incomingLanding, onLock, onPiece, overlay, children, boardId, hints, onHintUsed }: Props) {
   const prefs = usePrefs();
   const boardRef = useRef<HTMLCanvasElement>(null);
   const wellRef = useRef<HTMLDivElement>(null);
   const holdRef = useRef<HTMLCanvasElement>(null);
   const nextRef = useRef<HTMLCanvasElement>(null);
-  const live = useRef({ sim, getSim, paused, gravityMs, onLock, onPiece, overlay, prefs });
-  live.current = { sim, getSim, paused, gravityMs, onLock, onPiece, overlay, prefs };
+  const live = useRef({ sim, getSim, paused, gravityMs, onLock, onPiece, overlay, prefs, hints, onHintUsed });
+  live.current = { sim, getSim, paused, gravityMs, onLock, onPiece, overlay, prefs, hints, onHintUsed };
   const input = useRef<InputHandler | null>(null);
+  /** Set by G / the hint card; consumed on the next frame by the controller loop. */
+  const acceptHint = useRef(false);
+  const [hintMiss, setHintMiss] = useState<number | null>(null);
 
   useEffect(() => {
     const s = loadSettings();
@@ -45,6 +65,11 @@ export function Playfield({ sim, getSim, paused, gravityMs, cellSize, incomingQu
     input.current = inp;
     const down = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.tagName === "INPUT") return;
+      if (e.code === "KeyG" && !e.repeat && live.current.hints?.length) {
+        acceptHint.current = true;
+        e.preventDefault();
+        return;
+      }
       if (inp.keyDown(e.code)) e.preventDefault();
     };
     const up = (e: KeyboardEvent) => {
@@ -121,9 +146,24 @@ export function Playfield({ sim, getSim, paused, gravityMs, cellSize, incomingQu
           else if (c.piece !== before && (cmd === "left" || cmd === "right")) audio.play("move");
           else if (c.piece !== before && (cmd === "cw" || cmd === "ccw")) audio.play("rotate");
         }
+        const current = (L.hints ?? []).filter((h) => h.idx === L.sim.s.piecesPlaced);
+        if (acceptHint.current) {
+          acceptHint.current = false;
+          const h = current[0];
+          if (h) {
+            const placed = steerTo(c, h, L.sim.s.board);
+            if (placed) {
+              lock(placed, true);
+              L.onHintUsed?.(h);
+            } else setHintMiss(h.idx);
+          }
+        }
         lock(c.tick(dt), false);
         L.onPiece?.(c.piece);
-      } else inp.drain(dt);
+      } else {
+        inp.drain(dt);
+        acceptHint.current = false;
+      }
 
       const danger = stackDanger(L.sim.s.board);
       const isDanger = danger > 0.75 && playable;
@@ -147,6 +187,7 @@ export function Playfield({ sim, getSim, paused, gravityMs, cellSize, incomingQu
           still: L.prefs.reduceMotion,
           reduceFlashing: L.prefs.reduceFlashing,
           danger,
+          hints: playable ? (L.hints ?? []).filter((h) => h.idx === L.sim.s.piecesPlaced).map((h, i) => ({ piece: h.piece, color: h.color, primary: i === 0 })) : undefined,
         });
       }
       if (holdRef.current) drawPieceList(holdRef.current, [c.displayHold()], Math.round(cellSize * 0.6), look, c.holdUsed);
@@ -226,6 +267,8 @@ export function Playfield({ sim, getSim, paused, gravityMs, cellSize, incomingQu
   });
 
   const total = incomingQueued + incomingLanding;
+  const hint = hints?.find((h) => h.idx === sim.s.piecesPlaced) ?? null;
+  const hintCount = hints?.filter((h) => h.idx === sim.s.piecesPlaced).length ?? 0;
   const meterPct = (n: number) => `${(Math.min(20, n) / 20) * 100}%`;
   return (
     <div className={`playfield touch-${prefs.touchMode}`}>
@@ -257,6 +300,20 @@ export function Playfield({ sim, getSim, paused, gravityMs, cellSize, incomingQu
       <div className="side">
         <span className="tag">NEXT</span>
         <canvas ref={nextRef} />
+        {hint && !paused && (
+          <button
+            className="hint-card"
+            style={{ ["--coach" as string]: hint.color }}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              acceptHint.current = true;
+            }}
+            title="Drop your piece on the suggested spot (G)"
+          >
+            <span className="hint-from">💡 {hint.label}{hintCount > 1 ? ` +${hintCount - 1}` : ""}</span>
+            <span className="hint-act">{hintMiss === hint.idx ? "Can't reach — line it up yourself" : <>{isTouchDevice() ? "Tap to use" : <>Use <kbd>G</kbd></>}{hint.usedHold ? " · holds" : ""}</>}</span>
+          </button>
+        )}
       </div>
       <div className="touch">
         <div className="pad-left">

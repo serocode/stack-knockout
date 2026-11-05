@@ -1,5 +1,5 @@
-import { PlayerSim, type GarbageChunk, type LockResult, type PiecePos, type Placement } from "@tk/engine";
-import { Emitter, randomBytes, type Clock, type Mesh, type MeshMessage } from "@tk/net";
+import { PlayerSim, isPieceType, type GarbageChunk, type LockResult, type PiecePos, type Placement } from "@tk/engine";
+import { Emitter, randomBytes, type Clock, type Mesh, type MeshMessage, type TimerHandle } from "@tk/net";
 import { ReplicatedLog, type LogExport } from "./log.js";
 import {
   DEFAULT_RULES,
@@ -57,7 +57,39 @@ export type CoordinatorEvent =
   | { kind: "match-abandoned" }
   | { kind: "resync"; reason: string }
   | { kind: "rejected"; reason: string }
-  | { kind: "peer"; playerId: string; up: boolean };
+  | { kind: "peer"; playerId: string; up: boolean }
+  | { kind: "suggestion"; suggestion: Suggestion }
+  | { kind: "suggestion-taken"; player: string; coach: string }
+  | { kind: "callout"; from: string; code: string; about: string | null };
+
+/**
+ * Coaching: a player who is out of the match (eliminated, or spectating a
+ * match they joined late) proposes where a live player should drop their
+ * current piece. Purely advisory and never authoritative: it travels on the
+ * droppable `viz` channel, never enters the log, and a player who follows it
+ * still submits an ordinary Placement that the host validates as usual.
+ */
+export interface Suggestion {
+  matchId: string;
+  /** Coach (sender). */
+  from: string;
+  /** Player being coached. */
+  to: string;
+  /** The coached player's piece index this suggestion is for. */
+  idx: number;
+  /** Swap with the hold piece first. */
+  usedHold: boolean;
+  /** Final resting position (a hard-drop position). */
+  piece: PiecePos;
+  at: number;
+}
+
+/** Callout codes are opaque short ids; the presentation layer owns their wording. */
+export const CALLOUT_CODE_RE = /^[a-z]{1,12}$/;
+const CALLOUT_GAP_MS = 900;
+const SUGGESTION_TTL_MS = 20_000;
+/** Falling-piece updates: at most one per this many ms (20 Hz). */
+const LIVE_INTERVAL_MS = 50;
 
 export interface CoordinatorOptions {
   mesh: Mesh;
@@ -100,7 +132,9 @@ interface LocalPlayer {
   hashAt: Map<number, number>;
 }
 
-type HeartbeatPayload = { e: number; h: string | null; s: number; c: number };
+/** r: the sender's round-trip time to its host in ms (null if it is the host or hasn't measured yet). */
+type HeartbeatPayload = { e: number; h: string | null; s: number; c: number; r: number | null };
+const REPORTED_RTT_TTL_MS = 4000;
 
 /**
  * Match coordinator: one per peer. Owns host election, host authority, the
@@ -168,7 +202,22 @@ export class Coordinator {
   private matchEndSeq = Infinity;
   private lastMembershipSeq = 0;
   private livePiece: { piece: PiecePos; idx: number; dirty: boolean; at: number } | null = null;
-  readonly remotePieces = new Map<string, { piece: PiecePos; idx: number; at: number }>();
+  private liveFlush: TimerHandle | null = null;
+  /** Sequence number for our live messages: the live channel may reorder, so receivers keep only the newest. */
+  private liveSeq = 0;
+  readonly remotePieces = new Map<string, { piece: PiecePos; idx: number; at: number; q: number }>();
+  /**
+   * Pieces opponents have just locked, sent straight to everyone so their
+   * boards update after one hop instead of waiting for the host's log entry
+   * (two hops). Display-only: the log stays the truth and replaces it.
+   */
+  readonly remoteLocks = new Map<string, { piece: PiecePos; idx: number; at: number }>();
+  /** Coaching suggestions, keyed by coached player, then by coach. Only the latest per coach is kept. */
+  private readonly suggestions = new Map<string, Map<string, Suggestion>>();
+  private readonly lastCalloutFrom = new Map<string, number>();
+  private lastCalloutSent = -Infinity;
+  /** Each peer's self-reported ping to the host, from heartbeats. */
+  private readonly reportedRtt = new Map<string, { ms: number; at: number }>();
 
   private readonly timer: number;
   private readonly unsub: (() => void)[] = [];
@@ -329,6 +378,7 @@ export class Coordinator {
 
   async destroy(): Promise<void> {
     this.clock.clearInterval(this.timer);
+    if (this.liveFlush !== null) this.clock.clearTimeout(this.liveFlush);
     for (const u of this.unsub) u();
     await this.mesh.close();
   }
@@ -352,17 +402,176 @@ export class Coordinator {
     this.local.pending.push(pl);
     this.local.hashAt.set(this.local.sim.s.piecesPlaced, this.local.sim.hash());
     this.sendPlace(pl);
+    // Show the lock on everyone's screen now; the host's log entry follows a hop later.
+    this.sendLive(pl.pieceIndex, { type: pl.type, x: pl.x, y: pl.y, rot: pl.rot }, true);
     this.changed();
     return out.result;
   }
 
-  /** Latest falling-piece position, broadcast to opponents at <= 10 Hz on the viz channel. */
+  /**
+   * Latest falling-piece position, broadcast to opponents on the live channel
+   * at up to 20 Hz. Sent as soon as the rate allows (not on the 100 ms tick),
+   * with a trailing send so the final position always goes out.
+   */
   publishLivePiece(piece: PiecePos): void {
     if (!this.local) return;
     const idx = this.local.sim.s.piecesPlaced;
     const lp = this.livePiece;
     if (lp && lp.idx === idx && lp.piece.x === piece.x && lp.piece.y === piece.y && lp.piece.rot === piece.rot && lp.piece.type === piece.type) return;
-    this.livePiece = { piece: { ...piece }, idx, dirty: true, at: lp?.at ?? 0 };
+    this.livePiece = { piece: { ...piece }, idx, dirty: true, at: lp?.at ?? -Infinity };
+    this.flushLive();
+  }
+
+  private flushLive(): void {
+    const lp = this.livePiece;
+    if (!lp?.dirty || !this.local || this.mode === "left") return;
+    const now = this.clock.now();
+    const wait = lp.at + LIVE_INTERVAL_MS - now;
+    // A new piece goes out at once: it's what makes the previous lock visible.
+    const newPiece = this.lastLiveIdx !== lp.idx;
+    if (wait > 0 && !newPiece) {
+      this.liveFlush ??= this.clock.setTimeout(() => {
+        this.liveFlush = null;
+        this.flushLive();
+      }, wait);
+      return;
+    }
+    lp.dirty = false;
+    lp.at = now;
+    this.sendLive(lp.idx, lp.piece, false);
+  }
+
+  private lastLiveIdx = -1;
+
+  private sendLive(idx: number, piece: PiecePos, locked: boolean): void {
+    if (!this.local) return;
+    if (!locked) this.lastLiveIdx = idx;
+    const payload: Record<string, unknown> = { mid: this.local.matchId, i: idx, q: ++this.liveSeq, p: { t: piece.type, x: piece.x, y: piece.y, r: piece.rot } };
+    if (locked) payload.k = 1;
+    this.send("live", payload, undefined, "live");
+  }
+
+  private onLive(from: string, p: Record<string, unknown>): void {
+    const m = this.log?.state.match;
+    const pc = p.p;
+    if (!m || p.mid !== m.matchId || !m.players[from]) return;
+    if (!isInt(p.i, 0, 1e6) || !isObj(pc) || !isPieceType(pc.t) || !isInt(pc.x, -4, 13) || !isInt(pc.y, -4, 44) || !isInt(pc.r, 0, 3)) return void this.stats.invalid++;
+    const piece: PiecePos = { type: pc.t, x: pc.x, y: pc.y, rot: pc.r as PiecePos["rot"] };
+    const now = this.clock.now();
+    if (p.k === 1) {
+      const prev = this.remoteLocks.get(from);
+      if (!prev || p.i >= prev.idx) this.remoteLocks.set(from, { piece, idx: p.i, at: now });
+      return;
+    }
+    // Unordered delivery: drop anything older than what we already have (a reloaded sender restarts q, so accept it once ours is stale).
+    const q = isInt(p.q, 0, Number.MAX_SAFE_INTEGER) ? p.q : 0;
+    const prev = this.remotePieces.get(from);
+    if (prev && now - prev.at < 1000 && (p.i < prev.idx || (p.i === prev.idx && q <= prev.q))) return;
+    this.remotePieces.set(from, { piece, idx: p.i, at: now, q });
+  }
+
+  // ============================================================ coaching
+
+  /** Can `coach` send placement suggestions to `player` right now? Coaches are room members who are out of the match. */
+  canCoach(player: string, coach: string = this.playerId): boolean {
+    const st = this.log?.state;
+    const m = st?.match;
+    if (!st || !m || st.phase !== "playing" || coach === player) return false;
+    if (!m.players[player]?.alive) return false;
+    if (!findRoster(st, coach)) return false;
+    return !m.players[coach]?.alive;
+  }
+
+  /**
+   * Suggest where `player` should drop piece number `idx`. Broadcast to the
+   * whole room so other coaches see it too. Returns false if not allowed.
+   */
+  suggestPlacement(player: string, s: { idx: number; usedHold: boolean; piece: PiecePos }): boolean {
+    const m = this.log?.state.match;
+    if (!m || !this.canCoach(player)) return false;
+    const sug: Suggestion = { matchId: m.matchId, from: this.playerId, to: player, idx: s.idx, usedHold: s.usedHold, piece: { ...s.piece }, at: this.clock.now() };
+    this.storeSuggestion(sug);
+    const p = sug.piece;
+    this.send("sug", { mid: m.matchId, to: player, i: s.idx, h: s.usedHold, p: { t: p.type, x: p.x, y: p.y, r: p.rot } }, undefined, "viz");
+    this.changed();
+    return true;
+  }
+
+  /** Live suggestions for `player`'s current piece, newest first. */
+  suggestionsFor(player: string): Suggestion[] {
+    const st = this.log?.state;
+    const m = st?.match;
+    const byCoach = this.suggestions.get(player);
+    if (!st || !m || st.phase !== "playing" || !byCoach) return [];
+    const placed = player === this.playerId && this.local ? this.local.sim.s.piecesPlaced : m.players[player]?.sim.s.piecesPlaced ?? Infinity;
+    const now = this.clock.now();
+    const out: Suggestion[] = [];
+    for (const [coach, s] of byCoach) {
+      if (s.matchId !== m.matchId || s.idx < placed || now - s.at > SUGGESTION_TTL_MS) byCoach.delete(coach);
+      else if (s.idx === placed) out.push(s);
+    }
+    return out.sort((a, b) => b.at - a.at);
+  }
+
+  /** Tell the room we followed a coach's suggestion (credit where it's due). */
+  tookSuggestion(coach: string): void {
+    const m = this.log?.state.match;
+    if (!m || !isPid(coach)) return;
+    this.send("sug_ok", { mid: m.matchId, c: coach }, undefined, "viz");
+    this.events.emit("event", { kind: "suggestion-taken", player: this.playerId, coach });
+  }
+
+  /**
+   * Quick callout to the whole room (e.g. "nice", "help"). `about` optionally
+   * names another participant. Locally throttled; receivers throttle too.
+   */
+  sendCallout(code: string, about: string | null = null): boolean {
+    const st = this.log?.state;
+    const m = st?.match;
+    if (!st || !m || (st.phase !== "playing" && st.phase !== "countdown") || !CALLOUT_CODE_RE.test(code)) return false;
+    if (about !== null && !m.participants.includes(about)) return false;
+    const now = this.clock.now();
+    if (now - this.lastCalloutSent < CALLOUT_GAP_MS) return false;
+    this.lastCalloutSent = now;
+    this.send("call", { mid: m.matchId, c: code, a: about }, undefined, "viz");
+    this.events.emit("event", { kind: "callout", from: this.playerId, code, about });
+    return true;
+  }
+
+  private storeSuggestion(s: Suggestion): void {
+    let byCoach = this.suggestions.get(s.to);
+    if (!byCoach) this.suggestions.set(s.to, (byCoach = new Map()));
+    byCoach.set(s.from, s);
+  }
+
+  private onSuggestion(from: string, p: Record<string, unknown>): void {
+    const m = this.log?.state.match;
+    const pc = p.p;
+    if (!m || p.mid !== m.matchId || !isPid(p.to) || !isInt(p.i, 0, 1e6) || !isBool(p.h)) return;
+    if (!isObj(pc) || !isPieceType(pc.t) || !isInt(pc.x, -4, 13) || !isInt(pc.y, -4, 44) || !isInt(pc.r, 0, 3)) return void this.stats.invalid++;
+    if (!this.canCoach(p.to, from)) return;
+    const sug: Suggestion = { matchId: m.matchId, from, to: p.to, idx: p.i, usedHold: p.h, piece: { type: pc.t, x: pc.x, y: pc.y, rot: pc.r as PiecePos["rot"] }, at: this.clock.now() };
+    this.storeSuggestion(sug);
+    this.events.emit("event", { kind: "suggestion", suggestion: sug });
+    if (sug.to === this.playerId) this.changed();
+  }
+
+  private onSuggestionTaken(from: string, p: Record<string, unknown>): void {
+    const m = this.log?.state.match;
+    if (!m || p.mid !== m.matchId || !isPid(p.c) || !m.players[from]) return;
+    this.events.emit("event", { kind: "suggestion-taken", player: from, coach: p.c });
+  }
+
+  private onCallout(from: string, p: Record<string, unknown>): void {
+    const st = this.log?.state;
+    const m = st?.match;
+    if (!st || !m || p.mid !== m.matchId || !isStr(p.c, 12) || !CALLOUT_CODE_RE.test(p.c) || !findRoster(st, from)) return;
+    const about = p.a === null || p.a === undefined ? null : isPid(p.a) && m.participants.includes(p.a) ? p.a : undefined;
+    if (about === undefined) return void this.stats.invalid++;
+    const now = this.clock.now();
+    if (now - (this.lastCalloutFrom.get(from) ?? -Infinity) < CALLOUT_GAP_MS * 0.8) return;
+    this.lastCalloutFrom.set(from, now);
+    this.events.emit("event", { kind: "callout", from, code: p.c, about });
   }
 
   // ============================================================ messaging
@@ -411,27 +620,49 @@ export class Coordinator {
         }
         return;
       case "live":
-        if (isInt(p.i, 0, 1e6) && isObj(p.p) && isStr(p.p.t, 1) && isInt(p.p.x, -4, 13) && isInt(p.p.y, -4, 44) && isInt(p.p.r, 0, 3)) {
-          this.remotePieces.set(m.from, { piece: { type: p.p.t as PiecePos["type"], x: p.p.x, y: p.p.y, rot: p.p.r as PiecePos["rot"] }, idx: p.i, at: this.clock.now() });
-        }
-        return;
+        return this.onLive(m.from, p);
+      case "sug":
+        return this.onSuggestion(m.from, p);
+      case "sug_ok":
+        return this.onSuggestionTaken(m.from, p);
+      case "call":
+        return this.onCallout(m.from, p);
       default:
         this.stats.invalid++;
     }
   }
 
-  private send(type: string, payload: unknown, to?: string | string[], channel: "crit" | "state" | "viz" = "crit"): void {
+  private send(type: string, payload: unknown, to?: string | string[], channel: "crit" | "state" | "viz" | "live" = "crit"): void {
     this.mesh.send(channel, type, payload, to);
   }
 
   private heartbeatPayload(): HeartbeatPayload {
-    return { e: this.epoch, h: this.mode === "host" ? this.playerId : this.hostId, s: this.log?.lastSeq ?? 0, c: this.commit };
+    const toHost = this.mode !== "host" && this.hostId ? this.mesh.rtt(this.hostId) : null;
+    return { e: this.epoch, h: this.mode === "host" ? this.playerId : this.hostId, s: this.log?.lastSeq ?? 0, c: this.commit, r: toHost === null ? null : Math.round(toHost) };
+  }
+
+  /**
+   * A player's ping to the current host in ms: 0 for the host itself, null if
+   * unknown. This is the delay that matters for fairness here: placements are
+   * validated, and garbage is timed, by the host.
+   */
+  pingToHost(pid: string): number | null {
+    const host = this.mode === "host" ? this.playerId : this.hostId;
+    if (!host) return null;
+    if (pid === host) return 0;
+    if (pid === this.playerId || host === this.playerId) {
+      const ms = this.mesh.rtt(pid === this.playerId ? host : pid);
+      return ms === null ? null : Math.round(ms);
+    }
+    const r = this.reportedRtt.get(pid);
+    return r && this.mesh.isConnected(pid) && this.clock.now() - r.at < REPORTED_RTT_TTL_MS ? r.ms : null;
   }
 
   private onHeartbeat(from: string, raw: unknown): void {
     if (this.mode === "left" || !isObj(raw)) return;
     const e = raw.e, h = raw.h, s = raw.s;
     if (!isInt(e, 0, Number.MAX_SAFE_INTEGER) || !isInt(s, 0, Number.MAX_SAFE_INTEGER) || !(h === null || isPid(h))) return;
+    if (isInt(raw.r, 0, 60_000)) this.reportedRtt.set(from, { ms: raw.r, at: this.clock.now() });
     if (this.mode === "host" && e === this.epoch) {
       this.acks.set(from, Math.max(this.acks.get(from) ?? 0, s));
       this.updateCommit();
@@ -1103,6 +1334,9 @@ export class Coordinator {
         this.local = null;
         this.placeSeq.clear();
         this.remotePieces.clear();
+        this.remoteLocks.clear();
+        this.lastLiveIdx = -1;
+        this.livePiece = null;
         this.abandoned = false;
       }
       this.events.emit("event", { kind: "effect", effect, committed: false });
@@ -1151,12 +1385,7 @@ export class Coordinator {
       this.ackDue = false;
       this.send("ack", { e: this.epoch, s: this.log.lastSeq }, this.hostId, "state");
     }
-    const lp = this.livePiece;
-    if (lp?.dirty && now - lp.at >= 100 && this.local) {
-      lp.dirty = false;
-      lp.at = now;
-      this.send("live", { mid: this.local.matchId, i: lp.idx, p: { t: lp.piece.type, x: lp.piece.x, y: lp.piece.y, r: lp.piece.rot } }, undefined, "viz");
-    }
+    this.flushLive();
   }
 
   private hostTick(now: number): void {

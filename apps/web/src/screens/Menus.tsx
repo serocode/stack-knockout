@@ -243,6 +243,9 @@ export function SettingsScreen({ go }: { go: Go }) {
         <p className="muted small">Gestures: drag to move · tap left/right half to rotate · swipe down to drop · swipe up to hold · drag down slowly to soft drop.</p>
         {toggle("Vibration", prefs.haptics, (haptics) => setPrefs({ haptics }), "on supported phones")}
 
+        <h3>Coaching</h3>
+        {toggle("Suggestions & callouts", prefs.coaching, (coaching) => setPrefs({ coaching }), "show spots suggested by knocked-out players (press G to use one) and quick callouts")}
+
         <h3>Audio</h3>
         <Volume label="Master" value={prefs.masterVolume} onChange={(masterVolume) => setPrefs({ masterVolume })} />
         <Volume label="Music" value={prefs.musicVolume} onChange={(musicVolume) => setPrefs({ musicVolume })} />
