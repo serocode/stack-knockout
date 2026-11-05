@@ -51,12 +51,29 @@ cap and token-bucket rate limit in the Mesh:
 | `auth` | room-secret challenge/response | reliable, ordered |
 | `crit` | log entries, placements, elections, state sync | reliable, ordered, de-duplicated by message id |
 | `state` | acknowledgements | reliable |
-| `hb` | heartbeats (epoch, host, last applied seq, commit index) | reliable |
-| `viz` | opponents' falling-piece previews (≤10 Hz) | best-effort, droppable |
+| `hb` | heartbeats (epoch, host, last applied seq, commit index, own ping to host), 1 Hz ping/pong | reliable |
+| `viz` | coaching suggestions, callouts | reliable, non-critical |
+| `live` | falling-piece positions (≤20 Hz) and provisional locks | **unordered, no retransmits**, newest wins |
 
-Trystero multiplexes these over its data channel; the abstraction lets a native
-transport map them to separate `RTCDataChannel`s (e.g. `viz` as
-unordered/unreliable) without touching anything above `Transport`.
+Trystero multiplexes these over one reliable, ordered data channel per peer.
+`live` gets its own negotiated `RTCDataChannel` on the same connection
+(`ordered: false, maxRetransmits: 0`, stream id 77), so a lost packet costs one
+stale frame instead of stalling everything queued behind it. A peer only uses
+it after receiving something on it (a probe round trip). Until then, and for
+older clients, `live` falls back to Trystero's channel.
+
+**Perceived delay.** Your own board never waits for the network. For
+opponents:
+* Falling-piece positions are sent as soon as they change, at most every 50 ms
+  (a trailing send guarantees the final position goes out). Sequence numbers
+  drop packets that arrive out of order.
+* On lock, the player sends the placed piece on `live` directly to everyone.
+  Their board shows it (with any line clears applied locally) one hop later,
+  instead of waiting two hops for the host's log entry. The log entry then
+  replaces it. If the host rejects the lock, the next preview of the same
+  piece drops it.
+* Garbage still lands after the host-timed 500 ms cancel window. That delay is
+  a game rule, not network lag.
 
 **Not broadcast:** rendering state. Opponent boards are *reconstructed* from
 the authoritative log (every placement is an entry), so no board snapshots are
@@ -220,6 +237,30 @@ checkpoint + suffix, verified by replay and hash on receipt.
 * Closing or reloading a tab does **not** forfeit (the identity is reserved); the
   explicit Leave button does.
 
+### Ping
+
+The Mesh sends a timestamped `ping` on `hb` every second, and the peer echoes
+it back as `pong`. The result is smoothed (EWMA, α = 0.3) into a per-peer
+round-trip time, which is cleared when the peer goes down. Each heartbeat also
+carries the sender's ping to its host, so every player can show everyone's
+**ping to the host** (`Coordinator.pingToHost`). That is the delay that
+matters here: your own board is simulated locally and never waits, but
+opponents' placements, garbage and KOs pass through the host before they
+reach you.
+
+### Coaching and callouts
+
+Advisory only, and never in the log. `sug` (a hard-drop spot for a player's
+piece *n*), `sug_ok` ("I used X's suggestion") and `call` (a short callout
+code plus an optional named participant) go out on `viz`. Receivers check the
+match id and the sender's roster membership. Only room members who are out of
+the match may coach, and only players who are still alive can be coached.
+Suggestions are kept per coach, per coached player, and lapse once piece *n*
+locks or after 20 s. Callouts are throttled on both ends. Following a
+suggestion only issues the player's own hold/rotate/shift/hard-drop commands,
+so the resulting Placement goes through normal host validation. Tested in
+`coaching.test.ts` and `apps/web/test/coach.test.ts`.
+
 ## 7. Limitations of backend-free networking (spec §14.7, §11)
 
 * **Peer host ≠ trusted server.** The host validates everyone else's moves,
@@ -259,7 +300,7 @@ Checked on 2026-10-31.
 | Cloudflare Realtime TURN | Optional relay | First 1,000 GB free, then $0.05/GB egress | Credentials expire ≤48 h and are minted via an API call the docs suggest doing server-side — would need a serverless function, which this architecture avoids |
 
 **TURN volume estimate.** Per relayed player: heartbeats ~1 KB/s, log
-broadcasts ~2–9 KB/s (host side is the heaviest), previews ~3 KB/s → order of
+broadcasts ~2–9 KB/s (host side is the heaviest), previews ~6 KB/s at 20 Hz → order of
 10 KB/s, ≈ 1–3 MB per 3-minute match. Metered's free 500 MB covers on the order
 of a couple hundred relayed player-matches a month. Only pairs that fail direct
 connection use TURN at all.

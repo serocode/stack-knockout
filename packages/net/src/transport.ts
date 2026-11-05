@@ -9,9 +9,12 @@
  *  - crit: critical match events, elections, state sync (reliable, ordered)
  *  - state: acknowledgements and other frequent small state updates
  *  - hb:   heartbeats
- *  - viz:  non-critical visual notifications (falling piece previews, emotes)
+ *  - viz:  non-critical notifications (coaching suggestions, callouts); reliable
+ *  - live: falling-piece positions and provisional locks. Newest wins, so a
+ *          transport should deliver it unordered and without retransmits: a
+ *          lost packet must never hold back the next one (or anything else).
  */
-export const CHANNELS = ["auth", "crit", "state", "hb", "viz"] as const;
+export const CHANNELS = ["auth", "crit", "state", "hb", "viz", "live"] as const;
 export type Channel = (typeof CHANNELS)[number];
 
 export interface TransportEvents {

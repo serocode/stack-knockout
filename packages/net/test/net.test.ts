@@ -97,3 +97,18 @@ describe("mesh", () => {
     expect(meshes.a!.isConnected(meshes.b!.playerId)).toBe(true);
   });
 });
+
+describe("round-trip time", () => {
+  it("measures ping both ways and forgets it when the peer goes away", () => {
+    const { clock, net, meshes } = setup({ a: "S", b: "S" });
+    clock.advance(3000);
+    const a = meshes.a!;
+    const b = meshes.b!;
+    // 20 ms one-way latency on the simulated network.
+    expect(a.rtt(b.playerId)).toBeCloseTo(40, 0);
+    expect(b.rtt(a.playerId)).toBeCloseTo(40, 0);
+    net.setOnline("t-b", false);
+    clock.advance(5000);
+    expect(a.rtt(b.playerId)).toBeNull();
+  });
+});

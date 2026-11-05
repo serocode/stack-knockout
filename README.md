@@ -61,6 +61,21 @@ volume sliders, reduce motion / flashing, vibration, and touch control mode.
 C/Shift hold · tap an opponent to target them.
 Phones: drag to move · tap left/right half to rotate · swipe down to drop · swipe up to hold, plus an on-screen pad.
 
+## Coaching and callouts
+
+* **Coach:** once you're knocked out (or while spectating a match you joined
+  late), tap a live player's board to coach them. Move or rotate a ghost of
+  their current piece (arrows / Z / X, C for hold, B for the bot's pick, or tap
+  a column), then press **Suggest** (Enter). Other coaches' ideas show on the
+  same board in their own colours.
+* **Getting coached:** suggested spots appear outlined on your board, with a card
+  under NEXT. Press **G** (or tap the card) to drop your piece there. The room
+  is told whose suggestion you used. The suggestion expires when that piece locks.
+* **Callouts:** 👏 🎯 🆘 ⚠️ 🌀 🤝 under your board, or keys **1–6**. 🎯 names
+  your current target (or the leader, if you're spectating). They show as
+  speech bubbles over the sender's board.
+* Settings → Coaching turns incoming suggestions and callouts off.
+
 ## Layout
 
 ```

@@ -210,6 +210,45 @@ label.check input { width: auto; margin: 3px 0 0; }
 .spectate-grid { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
 .spectate .rankings { width: min(360px, 100%); }
 
+/* ============================================================== coaching & callouts */
+.callouts { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
+.callout { min-width: 36px; padding: 4px 6px; font-size: 17px; line-height: 1; }
+.callout:disabled { opacity: 0.45; }
+.callout-bubble {
+  position: fixed; z-index: 12; transform: translate(-50%, calc(-100% - 6px)); pointer-events: none;
+  max-width: 220px; padding: 6px 10px; border-radius: 12px; font-size: 13px; font-weight: 600; text-align: center;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--accent-2);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.35); animation: bubble 3.2s ease-out forwards;
+}
+.callout-bubble::after {
+  content: ""; position: absolute; left: 50%; bottom: -6px; width: 10px; height: 10px; transform: translateX(-50%) rotate(45deg);
+  background: var(--panel-2); border-right: 1px solid var(--accent-2); border-bottom: 1px solid var(--accent-2);
+}
+@keyframes bubble { 0% { opacity: 0; margin-top: 8px; } 8% { opacity: 1; margin-top: 0; } 85% { opacity: 1; } 100% { opacity: 0; } }
+
+.hint-card {
+  margin-top: 10px; display: grid; gap: 3px; width: 100%; max-width: 110px; padding: 7px 8px; text-align: left;
+  background: color-mix(in srgb, var(--coach) 14%, var(--panel)); color: var(--text);
+  border: 1px solid var(--coach); border-radius: 10px; font-size: 11px; font-weight: 600; animation: pop 0.35s cubic-bezier(.2,1.6,.4,1);
+}
+.hint-card:hover:not(:disabled) { background: color-mix(in srgb, var(--coach) 24%, var(--panel)); }
+.hint-from { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hint-act { color: var(--muted); font-weight: 500; }
+kbd { font: 600 10px/1 ui-monospace, monospace; padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); color: var(--text); }
+
+.coach-prompt { margin: 6px 0 0; color: var(--accent-2); font-size: 13px; font-weight: 600; }
+.opp.coached { border-color: var(--accent-2); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-2) 25%, transparent); }
+.coach { width: min(560px, 100%); padding: 14px; }
+.coach h3 { margin: 0; }
+.coach-body { display: flex; gap: 16px; align-items: flex-start; margin-top: 10px; flex-wrap: wrap; justify-content: center; }
+.coach-body .board-canvas { cursor: crosshair; }
+.coach-side { display: grid; gap: 8px; flex: 1; min-width: 170px; }
+.coach-pad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.coach-pad.two { grid-template-columns: repeat(2, 1fr); }
+.coach-side p { margin: 0; }
+.coach-others { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12px; }
+.coach-others li { padding-left: 8px; border-left: 3px solid var(--coach); }
+
 /* touch pad */
 .touch { display: none; grid-column: 1 / -1; grid-template-columns: 1fr 1.2fr 1fr; gap: 10px; margin-top: 4px; user-select: none; -webkit-user-select: none; width: 100%; }
 .touch > div { display: grid; gap: 8px; }
@@ -502,3 +541,14 @@ button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 4
   animation: orbit 10s linear infinite;
 }
 @keyframes orbit { to { transform: rotate(360deg); } }
+
+/* ============================================================== ping */
+.ping { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ping.good { color: var(--good); }
+.ping.ok { color: var(--warn); }
+.ping.bad { color: var(--bad); }
+.ping.host { color: var(--accent-2); }
+.ping-bars { width: 12px; height: 10px; fill: currentColor; flex: none; }
+.ping-chip { display: inline-flex; align-items: center; }
+.ping-chip .ping { font-size: 12px; }
+.opp-meta .ping { font-size: inherit; }

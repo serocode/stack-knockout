@@ -51,6 +51,15 @@ export interface BoardDrawOptions {
   reduceFlashing?: boolean;
   /** 0..1: how close the stack is to the top, for the danger glow. */
   danger?: number;
+  /** Coaching suggestions: outlined target spots, one colour per coach. */
+  hints?: BoardHint[];
+}
+
+export interface BoardHint {
+  piece: PiecePos;
+  color: string;
+  /** Emphasise (the one the player would take with G, or the coach's own draft). */
+  primary?: boolean;
 }
 
 export const FLASH_MS = 220;
@@ -112,6 +121,8 @@ export function drawBoard(canvas: HTMLCanvasElement, o: BoardDrawOptions): void 
     for (const [x, y] of pieceCells(o.active)) if (y >= VISIBLE_TOP) drawBlock(ctx, x * s, (y - VISIBLE_TOP) * s, s, v, look, t);
   }
 
+  if (o.hints?.length) drawHints(ctx, o.hints, s, t, !!o.still);
+
   if (o.flashes?.length) {
     for (const f of o.flashes) {
       const age = (t - f.at) / FLASH_MS;
@@ -165,4 +176,23 @@ export function rowsClearedBy(board: Board, piece: PiecePos): number[] {
     if (full) rows.push(y - VISIBLE_TOP);
   }
   return rows;
+}
+
+/** Suggested spots: a soft fill plus a dashed outline that gently pulses (static with reduce motion). */
+function drawHints(ctx: CanvasRenderingContext2D, hints: BoardHint[], s: number, t: number, still: boolean): void {
+  const pulse = still ? 1 : 0.75 + 0.25 * Math.sin(t / 180);
+  ctx.save();
+  // Primary last so it sits on top.
+  for (const h of [...hints].sort((a, b) => Number(!!a.primary) - Number(!!b.primary))) {
+    const a = h.primary ? pulse : 0.55;
+    ctx.globalAlpha = 0.22 * a;
+    ctx.fillStyle = h.color;
+    for (const [x, y] of pieceCells(h.piece)) if (y >= VISIBLE_TOP) ctx.fillRect(x * s + 1, (y - VISIBLE_TOP) * s + 1, s - 2, s - 2);
+    ctx.globalAlpha = a;
+    ctx.strokeStyle = h.color;
+    ctx.lineWidth = Math.max(1.5, s * (h.primary ? 0.12 : 0.07));
+    ctx.setLineDash(h.primary ? [] : [Math.max(2, s * 0.2), Math.max(2, s * 0.14)]);
+    for (const [x, y] of pieceCells(h.piece)) if (y >= VISIBLE_TOP) ctx.strokeRect(x * s + 2.5, (y - VISIBLE_TOP) * s + 2.5, s - 5, s - 5);
+  }
+  ctx.restore();
 }

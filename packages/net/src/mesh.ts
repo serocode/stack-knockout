@@ -28,6 +28,8 @@ export interface MeshOptions {
   heartbeatMs?: number;
   /** A peer is reported down after this long without any traffic. */
   downAfterMs?: number;
+  /** Round-trip measurement interval (ping/pong on the hb channel). */
+  pingMs?: number;
   getHeartbeat?: () => unknown;
 }
 
@@ -37,6 +39,7 @@ export const MAX_BYTES: Record<Channel, number> = {
   state: 4096,
   hb: 2048,
   viz: 2048,
+  live: 512,
 };
 
 const RATE: Record<Channel, { perSec: number; burst: number }> = {
@@ -45,6 +48,7 @@ const RATE: Record<Channel, { perSec: number; burst: number }> = {
   state: { perSec: 40, burst: 80 },
   hb: { perSec: 10, burst: 20 },
   viz: { perSec: 30, burst: 60 },
+  live: { perSec: 45, burst: 90 },
 };
 
 interface PeerAuth {
@@ -87,6 +91,8 @@ export class Mesh {
   private readonly emitter = new Emitter<MeshEvents>();
   private readonly auth = new Map<string, PeerAuth>();
   private readonly bindings = new Map<string, Binding>();
+  /** Smoothed round-trip time per player id, in ms. */
+  private readonly rtts = new Map<string, number>();
   private readonly timers: TimerHandle[] = [];
   private readonly unsub: (() => void)[] = [];
   private counter = 0;
@@ -110,6 +116,7 @@ export class Mesh {
     for (const p of this.t.peers()) this.onPeerJoin(p);
     this.timers.push(this.clock.setInterval(() => this.beat(), this.heartbeatMs));
     this.timers.push(this.clock.setInterval(() => this.checkLiveness(), Math.max(50, Math.floor(this.heartbeatMs / 2))));
+    this.timers.push(this.clock.setInterval(() => this.ping(), opts.pingMs ?? 1000));
   }
 
   on<E extends keyof MeshEvents>(event: E, handler: MeshEvents[E]): () => void {
@@ -132,6 +139,11 @@ export class Mesh {
 
   lastHeard(playerId: string): number | null {
     return this.bindings.get(playerId)?.lastHeard ?? null;
+  }
+
+  /** Smoothed round-trip time to a connected player in ms, or null if not measured yet. */
+  rtt(playerId: string): number | null {
+    return this.isConnected(playerId) ? (this.rtts.get(playerId) ?? null) : null;
   }
 
   send(channel: Exclude<Channel, "auth">, type: string, payload: unknown, to?: string | string[]): void {
@@ -199,6 +211,7 @@ export class Mesh {
     const b = this.bindings.get(a.verifiedPid);
     if (b && b.transportId === peer) {
       this.bindings.delete(a.verifiedPid);
+      this.rtts.delete(a.verifiedPid);
       if (b.up) this.emitter.emit("peerDown", a.verifiedPid, "left");
     }
   }
@@ -276,6 +289,8 @@ export class Mesh {
     }
     this.touch(pid);
     if (ch === "hb") {
+      if (type === "ping") return this.send("hb", "pong", m.p, pid);
+      if (type === "pong") return this.onPong(pid, m.p);
       this.emitter.emit("heartbeat", pid, m.p);
       return;
     }
@@ -342,6 +357,20 @@ export class Mesh {
     }
   }
 
+  private ping(): void {
+    if (this.connectedPlayers().length > 0) this.send("hb", "ping", { ts: this.clock.now() });
+  }
+
+  private onPong(pid: string, p: unknown): void {
+    const ts = (p as { ts?: unknown } | null)?.ts;
+    if (typeof ts !== "number" || !Number.isFinite(ts)) return void this.stats.malformed++;
+    const sample = this.clock.now() - ts;
+    if (sample < 0 || sample > 60_000) return;
+    // EWMA: steady enough to read, quick enough to show a spike.
+    const prev = this.rtts.get(pid);
+    this.rtts.set(pid, prev === undefined ? sample : prev * 0.7 + sample * 0.3);
+  }
+
   private beat(): void {
     if (this.connectedPlayers().length === 0 && this.bindings.size === 0) return;
     // Heartbeat everyone bound, including peers currently marked down, so a
@@ -357,6 +386,7 @@ export class Mesh {
     for (const [pid, b] of this.bindings) {
       if (b.up && now - b.lastHeard > this.downAfterMs) {
         b.up = false;
+        this.rtts.delete(pid);
         this.emitter.emit("peerDown", pid, "timeout");
       }
     }

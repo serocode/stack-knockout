@@ -32,6 +32,8 @@ export interface Prefs {
   reduceFlashing: boolean;
   haptics: boolean;
   touchMode: TouchMode;
+  /** Show coaching suggestions and callouts from other players. */
+  coaching: boolean;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -46,6 +48,7 @@ export const DEFAULT_PREFS: Prefs = {
   reduceFlashing: false,
   haptics: true,
   touchMode: "both",
+  coaching: true,
 };
 
 const KEY = "tk.prefs";
@@ -68,6 +71,7 @@ function sanitize(raw: unknown): Prefs {
     reduceFlashing: typeof r.reduceFlashing === "boolean" ? r.reduceFlashing : false,
     haptics: typeof r.haptics === "boolean" ? r.haptics : true,
     touchMode: r.touchMode === "gestures" || r.touchMode === "buttons" || r.touchMode === "both" ? r.touchMode : "both",
+    coaching: typeof r.coaching === "boolean" ? r.coaching : true,
   };
 }
 
