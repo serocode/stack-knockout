@@ -1,18 +1,21 @@
 import { Coordinator } from "@tk/coordinator";
-import { BroadcastTransport, Mesh, realClock, signalingRoomId, type RoomCredentials, type Transport } from "@tk/net";
+import { BroadcastTransport, Mesh, newPlayerId, realClock, signalingRoomId, type RoomCredentials, type Transport } from "@tk/net";
+import { CpuOpponents, type CpuLevel } from "./cpu";
 import { playerIdFor } from "./identity";
 import { loadSettings } from "./settings";
 import { getPrefs, subscribePrefs } from "./prefs";
 import { tierForScore, toWire } from "../cosmetics/catalog";
 import { getProfile, subscribeProfile } from "../progress/profile";
 
-export type NetMode = "online" | "local";
+export type NetMode = "online" | "local" | "cpu";
 
 export interface Session {
   creds: RoomCredentials;
   mode: NetMode;
   coord: Coordinator;
   mesh: Mesh;
+  /** Computer opponents ("cpu" mode only). */
+  cpu?: CpuOpponents;
   close: () => void;
 }
 
@@ -22,7 +25,8 @@ const APP_ID = "stack-knockout-v1";
  * Wires transport -> mesh -> coordinator. "online" uses WebRTC with Trystero's
  * Nostr signaling; "local" uses BroadcastChannel between tabs on one device.
  */
-export async function openSession(opts: { creds: RoomCredentials; mode: NetMode; name: string; create: boolean }): Promise<Session> {
+export async function openSession(opts: { creds: RoomCredentials; mode: NetMode; name: string; create: boolean; cpu?: { count: number; level: CpuLevel } }): Promise<Session> {
+  if (opts.mode === "cpu") return openCpuSession({ ...opts, cpu: opts.cpu ?? { count: 1, level: "medium" } });
   const { playerId, release } = playerIdFor(opts.creds.roomCode, opts.mode === "local");
   let transport: Transport;
   if (opts.mode === "local") {
@@ -73,21 +77,7 @@ export async function openSession(opts: { creds: RoomCredentials; mode: NetMode;
   const onHide = () => void mesh.close();
   window.addEventListener("pagehide", onHide);
 
-  // Share cosmetic changes with the room as they happen (visual only).
-  let lastWire = JSON.stringify(toWire(getPrefs().cosmetics, tierForScore(getProfile().careerScore).id));
-  const pushLook = () => {
-    const wire = toWire(getPrefs().cosmetics, tierForScore(getProfile().careerScore).id);
-    const j = JSON.stringify(wire);
-    if (j === lastWire) return;
-    lastWire = j;
-    coord.setCosmetics(wire);
-  };
-  const unsubLook = subscribePrefs(pushLook);
-  const unsubTier = subscribeProfile(pushLook);
-  const unsubPrefs = () => {
-    unsubLook();
-    unsubTier();
-  };
+  const unsubPrefs = shareCosmetics(coord);
   return {
     creds: opts.creds,
     mode: opts.mode,
@@ -99,5 +89,53 @@ export async function openSession(opts: { creds: RoomCredentials; mode: NetMode;
       coord.leave();
       release();
     },
+  };
+}
+
+/**
+ * Practice against the computer: the player hosts a room on an in-memory
+ * network in this tab and bot coordinators join it. No signaling, no peers.
+ */
+function openCpuSession(opts: { creds: RoomCredentials; name: string; cpu: { count: number; level: CpuLevel } }): Session {
+  const cpu = new CpuOpponents(opts.creds.roomCode, opts.creds.secret, opts.cpu.level, opts.cpu.count);
+  const playerId = newPlayerId();
+  const mesh = new Mesh({ transport: cpu.net.createTransport(`me-${playerId}`), clock: realClock, roomId: opts.creds.roomCode, secret: opts.creds.secret, playerId });
+  const coord = new Coordinator({
+    mesh,
+    clock: realClock,
+    name: opts.name,
+    create: true,
+    cosmetics: toWire(getPrefs().cosmetics, tierForScore(getProfile().careerScore).id),
+  });
+  const unsubPrefs = shareCosmetics(coord);
+  return {
+    creds: opts.creds,
+    mode: "cpu",
+    coord,
+    mesh,
+    cpu,
+    close: () => {
+      unsubPrefs();
+      cpu.close();
+      void coord.destroy();
+    },
+  };
+}
+
+/** Share cosmetic changes with the room as they happen (visual only). Returns an unsubscribe. */
+function shareCosmetics(coord: Coordinator): () => void {
+  let lastWire = JSON.stringify(toWire(getPrefs().cosmetics, tierForScore(getProfile().careerScore).id));
+  const pushLook = () => {
+    const wire = toWire(getPrefs().cosmetics, tierForScore(getProfile().careerScore).id);
+    const j = JSON.stringify(wire);
+    if (j === lastWire) return;
+    lastWire = j;
+    coord.setCosmetics(wire);
+  };
+  const unsubLook = subscribePrefs(pushLook);
+  const unsubTier = subscribeProfile(pushLook);
+  return () => {
+    unsubLook();
+    unsubTier();
   };
 }

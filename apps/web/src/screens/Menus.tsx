@@ -11,6 +11,7 @@ import { CODE_ALPHABET, ROOM_CODE_LENGTH, SECRET_LENGTH, createRoomCredentials, 
 import { saveName, savedName } from "../lib/identity";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "../lib/settings";
 import { Playfield } from "./Playfield";
+import { CPU_LEVELS, MAX_CPU, type CpuLevel } from "../lib/cpu";
 
 type Go = (h: string) => void;
 
@@ -49,6 +50,10 @@ export function Menu({ go }: { go: Go }) {
           <button className="big-btn alt" onClick={() => go("#/join")}>
             <span className="big-btn-title">Join room</span>
             <span className="big-btn-sub">Use a link or code</span>
+          </button>
+          <button className="big-btn cpu wide" onClick={() => go("#/cpu")}>
+            <span className="big-btn-title">🤖 Vs Computer</span>
+            <span className="big-btn-sub">Battle 1–5 bots, offline</span>
           </button>
         </div>
         <div className="menu-tiles">
@@ -145,6 +150,46 @@ export function Join({ go, hash }: { go: Go; hash: string }) {
             }}
           >
             Join
+          </button>
+          <button className="ghost" onClick={() => go("#/")}>Back</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function VsComputer({ go }: { go: Go }) {
+  const [name, setName] = useState(savedName());
+  const [count, setCount] = useState(1);
+  const [level, setLevel] = useState<CpuLevel>("medium");
+  return (
+    <div className="page">
+      <div className="panel narrow">
+        <h2>Vs Computer</h2>
+        <NameField value={name} onChange={setName} />
+        <label>Opponents</label>
+        <div className="seg">
+          {Array.from({ length: MAX_CPU }, (_, i) => i + 1).map((n) => (
+            <button key={n} className={`small ${count === n ? "on" : "ghost"}`} onClick={() => setCount(n)}>{n}</button>
+          ))}
+        </div>
+        <label>Difficulty</label>
+        <div className="seg">
+          {(Object.keys(CPU_LEVELS) as CpuLevel[]).map((l) => (
+            <button key={l} className={`small ${level === l ? "on" : "ghost"}`} onClick={() => setLevel(l)}>{CPU_LEVELS[l].label}</button>
+          ))}
+        </div>
+        <p className="muted small">Full knockout rules — garbage, bombs, KOs — against bots running in your browser.</p>
+        <div className="row">
+          <button
+            disabled={!name.trim()}
+            onClick={() => {
+              saveName(name.trim());
+              const c = createRoomCredentials();
+              go(`#/room?${new URLSearchParams({ r: c.roomCode, k: c.secret, e: String(c.expiresAt), m: "cpu", bots: String(count), lvl: level })}`);
+            }}
+          >
+            Battle
           </button>
           <button className="ghost" onClick={() => go("#/")}>Back</button>
         </div>

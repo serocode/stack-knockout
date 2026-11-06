@@ -23,6 +23,7 @@ export class SimNetwork {
   private online = new Set<string>();
   private group = new Map<string, number>();
   private links = new Map<string, { up: boolean; downSince: number | null }>();
+  private readonly linkTimer: number;
 
   constructor(
     readonly clock: Clock,
@@ -30,7 +31,12 @@ export class SimNetwork {
   ) {
     this.latencyMs = opts.latencyMs ?? 30;
     this.linkTimeoutMs = opts.linkTimeoutMs ?? 10_000;
-    clock.setInterval(() => this.checkLinks(), 250);
+    this.linkTimer = clock.setInterval(() => this.checkLinks(), 250);
+  }
+
+  /** Stops the link checker (needed when running on the real clock). */
+  dispose(): void {
+    this.clock.clearInterval(this.linkTimer);
   }
 
   createTransport(id: string): SimTransport {

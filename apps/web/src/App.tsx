@@ -10,7 +10,9 @@ import { Backdrop } from "./ui/Backdrop";
 import { UnlockToasts } from "./ui/Toasts";
 import { Lab } from "./lab/Lab";
 import { Room } from "./screens/Room";
-import { Create, Join, Menu, SettingsScreen, Solo } from "./screens/Menus";
+import { Create, Join, Menu, SettingsScreen, Solo, VsComputer } from "./screens/Menus";
+import { MAX_CPU, isCpuLevel, type CpuLevel } from "./lib/cpu";
+import type { NetMode } from "./lib/session";
 
 /** Hash routing keeps invite secrets in the fragment and needs no server rewrites. */
 export function App({ hash }: { hash: string }) {
@@ -52,7 +54,11 @@ export function App({ hash }: { hash: string }) {
     const k = normalizeCode(p.get("k") ?? "", SECRET_LENGTH);
     if (!r || !k) return null;
     const creds: RoomCredentials = { roomCode: r, secret: k, expiresAt: Number(p.get("e") ?? 0) };
-    return { creds, mode: p.get("m") === "local" ? ("local" as const) : ("online" as const), create: p.get("new") === "1" };
+    const m = p.get("m");
+    const mode: NetMode = m === "local" || m === "cpu" ? m : "online";
+    // Computer opponents live only in this tab, so a cpu room is always created fresh.
+    const cpu = mode === "cpu" ? { count: Math.min(MAX_CPU, Math.max(1, Number(p.get("bots")) || 1)), level: isCpuLevel(p.get("lvl")) ? (p.get("lvl") as CpuLevel) : ("medium" as const) } : undefined;
+    return { creds, mode, create: mode === "cpu" || p.get("new") === "1", cpu };
   }, [hash, path]);
 
   // After creating, drop the "new" flag so a reload rejoins instead of re-creating.
@@ -67,17 +73,19 @@ export function App({ hash }: { hash: string }) {
   if (path === "#/room") {
     if (!room) return <Menu go={go} />;
     const name = savedName() || "Player";
-    if (!savedName()) {
+    if (!savedName() && room.mode !== "cpu") {
       go(`#/join?${new URLSearchParams({ r: room.creds.roomCode, k: room.creds.secret, e: String(room.creds.expiresAt) })}`);
       return null;
     }
-    return <Room key={`${room.creds.roomCode}-${room.mode}`} creds={room.creds} mode={room.mode} name={name} create={room.create} go={go} />;
+    return <Room key={`${room.creds.roomCode}-${room.mode}`} creds={room.creds} mode={room.mode} name={name} create={room.create} cpu={room.cpu} go={go} />;
   }
   switch (path) {
     case "#/create":
       return <Create go={go} />;
     case "#/join":
       return <Join go={go} hash={hash} />;
+    case "#/cpu":
+      return <VsComputer go={go} />;
     case "#/solo":
       return <Solo go={go} />;
     case "#/lab":
@@ -102,7 +110,7 @@ export function Shell() {
     return () => window.removeEventListener("hashchange", on);
   }, []);
   const path = hash.split("?")[0] ?? "#/";
-  const calm = ["#/", "", "#/create", "#/join", "#/settings", "#/profile", "#/customize"].includes(path);
+  const calm = ["#/", "", "#/create", "#/join", "#/cpu", "#/settings", "#/profile", "#/customize"].includes(path);
   return (
     <>
       {calm && <Backdrop />}

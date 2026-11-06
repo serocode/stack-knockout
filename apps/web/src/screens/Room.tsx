@@ -13,6 +13,7 @@ import { fx, tierFor } from "../fx/fx";
 import { isTouchDevice } from "../lib/device";
 import { getPrefs, usePrefs } from "../lib/prefs";
 import { openSession, type NetMode, type Session } from "../lib/session";
+import { CPU_LEVELS, MAX_CPU, type CpuLevel, type CpuOpponents } from "../lib/cpu";
 import { useCoordinator } from "../lib/useCoordinator";
 import { drawBoard, lookOf, sizeCanvas } from "../render/draw";
 import { drawBlock } from "../render/skins";
@@ -36,7 +37,7 @@ interface Bubble {
 
 const boardEl = (pid: string) => document.querySelector<HTMLElement>(`[data-board="${CSS.escape(pid)}"]`);
 
-export function Room({ creds, mode, name: nameProp, create, go }: { creds: RoomCredentials; mode: NetMode; name: string; create: boolean; go: (h: string) => void }) {
+export function Room({ creds, mode, name: nameProp, create, cpu, go }: { creds: RoomCredentials; mode: NetMode; name: string; create: boolean; cpu?: { count: number; level: CpuLevel }; go: (h: string) => void }) {
   // The name is fixed when the room opens: renaming in another tab must not tear down the session.
   const [name] = useState(nameProp);
   const [session, setSession] = useState<Session | null>(null);
@@ -45,11 +46,13 @@ export function Room({ creds, mode, name: nameProp, create, go }: { creds: RoomC
   const [customizing, setCustomizing] = useState(false);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const nid = useRef(0);
+  // Only the starting line-up; the lobby adds/removes bots after that.
+  const [cpuStart] = useState(cpu);
 
   useEffect(() => {
     let s: Session | null = null;
     let cancelled = false;
-    openSession({ creds, mode, name, create })
+    openSession({ creds, mode, name, create, cpu: cpuStart })
       .then((sess) => {
         if (cancelled) return sess.close();
         s = sess;
@@ -60,7 +63,7 @@ export function Room({ creds, mode, name: nameProp, create, go }: { creds: RoomC
       cancelled = true;
       s?.close();
     };
-  }, [creds, mode, name, create]);
+  }, [creds, mode, name, create, cpuStart]);
 
   const coord = session?.coord ?? null;
   const v = useCoordinator(coord);
@@ -192,7 +195,7 @@ export function Room({ creds, mode, name: nameProp, create, go }: { creds: RoomC
       </Panel>
     );
   if (error) return <Panel title="Couldn't open the room"><p className="muted">{error}</p><button onClick={() => go("#/")}>Back</button></Panel>;
-  if (!session || !v || !coord) return <Panel title="Connecting…"><p className="muted">Starting {mode === "online" ? "WebRTC signaling" : "same-device channel"}…</p></Panel>;
+  if (!session || !v || !coord) return <Panel title="Connecting…"><p className="muted">Starting {mode === "online" ? "WebRTC signaling" : mode === "cpu" ? "computer opponents" : "same-device channel"}…</p></Panel>;
 
   if (v.mode === "rejected")
     return (
@@ -230,7 +233,7 @@ export function Room({ creds, mode, name: nameProp, create, go }: { creds: RoomC
       </div>
       {v.migrating && st.phase !== "lobby" && <div className="banner warn">Host migration in progress — gameplay paused</div>}
       {v.migrating && st.phase === "lobby" && <div className="banner warn">Host unreachable — waiting for a majority of the room to reconnect</div>}
-      {st.phase === "lobby" && <Lobby coord={coord} st={st} creds={creds} mode={mode} onCustomize={() => setCustomizing(true)} />}
+      {st.phase === "lobby" && <Lobby coord={coord} st={st} creds={creds} mode={mode} cpu={session.cpu} onCustomize={() => setCustomizing(true)} />}
       {(st.phase === "countdown" || st.phase === "playing") && <Match coord={coord} st={st} />}
       {st.phase === "ended" && <Results coord={coord} st={st} />}
       {customizing && <Customize embedded onClose={() => setCustomizing(false)} />}
@@ -265,8 +268,14 @@ function TopBar({ coord, st, session, go, onCustomize }: { coord: Coordinator; s
   return (
     <header className="topbar">
       <button className="brand" onClick={() => go("#/")} aria-label="Main menu"><LogoMark size={30} /></button>
-      <div className="chip mono">{session.creds.roomCode}</div>
-      <div className="chip hide-sm">{session.mode === "online" ? "WebRTC" : "Same device"}</div>
+      {session.mode === "cpu" ? (
+        <div className="chip">Vs computer · {CPU_LEVELS[session.cpu?.level ?? "medium"].label}</div>
+      ) : (
+        <>
+          <div className="chip mono">{session.creds.roomCode}</div>
+          <div className="chip hide-sm">{session.mode === "online" ? "WebRTC" : "Same device"}</div>
+        </>
+      )}
       <div className="chip hide-sm" title="Host epoch / log position">e{v.epoch} · #{v.lastSeq}{v.commit < v.lastSeq ? ` (${v.commit})` : ""}</div>
       <div className="grow" />
       <div className="chip ping-chip">
@@ -288,7 +297,7 @@ function TopBar({ coord, st, session, go, onCustomize }: { coord: Coordinator; s
   );
 }
 
-function Lobby({ coord, st, creds, mode, onCustomize }: { coord: Coordinator; st: RoomState; creds: RoomCredentials; mode: NetMode; onCustomize: () => void }) {
+function Lobby({ coord, st, creds, mode, cpu, onCustomize }: { coord: Coordinator; st: RoomState; creds: RoomCredentials; mode: NetMode; cpu?: CpuOpponents; onCustomize: () => void }) {
   const v = coord.view();
   const me = st.roster.find((r) => r.playerId === coord.playerId);
   const link = useMemo(() => {
@@ -315,6 +324,7 @@ function Lobby({ coord, st, creds, mode, onCustomize }: { coord: Coordinator; st
                   {r.name}
                   <TierBadge tier={tierFromWire(r.cosmetics)} small />
                   {r.playerId === coord.playerId && <em> (you)</em>}
+                  {cpu?.isBot(r.playerId) && <span className="badge">CPU</span>}
                   <span className="looks">
                     {labelOf(BLOCK_SKINS, c.block)} · {labelOf(FRAMES, c.frame)} · {labelOf(EFFECTS, c.effect)}
                   </span>
@@ -349,6 +359,9 @@ function Lobby({ coord, st, creds, mode, onCustomize }: { coord: Coordinator; st
           {v.isHost && !can.ok && <span className="muted small">{can.reason}</span>}
         </div>
       </section>
+      {cpu ? (
+        <CpuPanel cpu={cpu} />
+      ) : (
       <section className="panel invite">
         <h3>Invite friends</h3>
         <label>Room code</label>
@@ -389,7 +402,34 @@ function Lobby({ coord, st, creds, mode, onCustomize }: { coord: Coordinator; st
           </button>
         </div>
       </section>
+      )}
     </div>
+  );
+}
+
+/** Lobby panel for computer opponents: how many, and how tough. */
+function CpuPanel({ cpu }: { cpu: CpuOpponents }) {
+  const [, bump] = useState(0);
+  const refresh = () => bump((x) => x + 1);
+  return (
+    <section className="panel invite">
+      <h3>Computer opponents</h3>
+      <label>Opponents</label>
+      <div className="row">
+        <button className="small ghost" disabled={cpu.count <= 1} onClick={() => { cpu.remove(); refresh(); }} aria-label="Remove an opponent">−</button>
+        <div className="big mono">{cpu.count}</div>
+        <button className="small ghost" disabled={cpu.count >= MAX_CPU} onClick={() => { cpu.add(); refresh(); }} aria-label="Add an opponent">+</button>
+      </div>
+      <label>Difficulty</label>
+      <div className="seg">
+        {(Object.keys(CPU_LEVELS) as CpuLevel[]).map((l) => (
+          <button key={l} className={`small ${cpu.level === l ? "on" : "ghost"}`} onClick={() => { cpu.setLevel(l); refresh(); }}>
+            {CPU_LEVELS[l].label}
+          </button>
+        ))}
+      </div>
+      <p className="muted small">Bots play right here in your browser — no internet needed. Difficulty sets how fast and how cleanly they stack; you can change it between matches.</p>
+    </section>
   );
 }
 

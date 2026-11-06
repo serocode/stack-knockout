@@ -432,6 +432,8 @@ button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 4
 }
 .big-btn:hover:not(:disabled) { background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent-2) 140%); transform: translateY(-1px); }
 .big-btn.alt { background: linear-gradient(135deg, color-mix(in srgb, var(--accent-2) 70%, #000) 0%, var(--accent-2) 100%); color: #061016; box-shadow: 0 10px 24px color-mix(in srgb, var(--accent-2) 25%, transparent); }
+.big-btn.wide { grid-column: 1 / -1; }
+.big-btn.cpu { background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 55%, #000) 0%, color-mix(in srgb, var(--accent-2) 55%, var(--accent)) 100%); }
 .big-btn-title { font-family: var(--display); font-size: 21px; font-weight: 700; }
 .big-btn-sub { font-size: 12px; opacity: 0.85; font-weight: 500; }
 .menu-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }

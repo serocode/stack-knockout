@@ -19,6 +19,14 @@ pnpm build       # static output in dist (copied from apps/web/dist)
 
 Longer chaos run: `CHAOS_SEEDS=100 pnpm vitest run packages/coordinator/test/chaos.test.ts`
 
+## Play against the computer
+
+Menu → **Vs Computer**: pick 1–5 bots and a difficulty (Easy, Medium, Hard,
+Expert) and play a full knockout match offline. You host the room on an
+in-memory network in your tab and the bots join it as ordinary coordinators, so
+garbage, bombs, KOs, results and rematches all run the normal code path. You
+can add or remove bots and change the difficulty from the lobby between matches.
+
 ## Try host migration without other devices
 
 * **Migration lab** (menu → Migration lab): six real coordinators with bots in
