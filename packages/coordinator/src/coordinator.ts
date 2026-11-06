@@ -6,6 +6,8 @@ import {
   MIN_PLAYERS,
   findRoster,
   isLogEntry,
+  isMatchOptions,
+  type MatchOptions,
   type Effect,
   type EntryBody,
   type LogEntry,
@@ -336,6 +338,12 @@ export class Coordinator {
     if (!isCosmetics(cosmetics)) return;
     this.cosmetics = cosmetics;
     this.intent({ k: "cosmetics", playerId: this.playerId, cosmetics }, { op: "cos", cos: cosmetics });
+  }
+
+  /** Host only, lobby only: change the room's match options (bombs etc.). */
+  setOptions(options: MatchOptions): boolean {
+    if (this.mode !== "host" || this.log?.state.phase !== "lobby" || !isMatchOptions(options)) return false;
+    return this.hostAppend([{ k: "options", options: { ...options } }]).length === 1;
   }
 
   canStart(): { ok: boolean; reason?: string } {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isCosmetics } from "@tk/coordinator";
-import { AVATARS, BACKGROUNDS, BLOCK_SKINS, DEFAULT_COSMETICS, EFFECTS, FRAMES, GARBAGES, GHOSTS, PRESET_PALETTES, TIERS, enforceUnlocks, fromWire, isUnlocked, sanitizeCosmetics, tierForScore, tierFromWire, toWire, type Cosmetics } from "../src/cosmetics/catalog";
+import { AVATARS, BACKGROUNDS, BLOCK_SKINS, BOMBS, DEFAULT_COSMETICS, EFFECTS, FRAMES, GARBAGES, GHOSTS, PRESET_PALETTES, TIERS, enforceUnlocks, fromWire, isUnlocked, sanitizeCosmetics, tierForScore, tierFromWire, toWire, type Cosmetics } from "../src/cosmetics/catalog";
 import { ACHIEVEMENTS, getProfile, onUnlock, recordGame, recordLock, resetProfile, sanitizeProfile, type UnlockEvent } from "../src/progress/profile";
 
 describe("cosmetics wire format", () => {
@@ -15,6 +15,7 @@ describe("cosmetics wire format", () => {
             background: BACKGROUNDS[(block.id.length + frame.id.length) % BACKGROUNDS.length]!.id,
             ghost: GHOSTS[effect.id.length % GHOSTS.length]!.id,
             garbage: GARBAGES[frame.id.length % GARBAGES.length]!.id,
+            bomb: BOMBS[block.id.length % BOMBS.length]!.id,
             palette: [...PRESET_PALETTES[block.id.length % PRESET_PALETTES.length]!.colors],
             avatar: AVATARS[effect.id.length % AVATARS.length]!.id,
             corners: "soft",
@@ -37,7 +38,7 @@ describe("cosmetics wire format", () => {
 
 describe("premium unlocks", () => {
   it("every premium item belongs to a real tier above Rookie", () => {
-    for (const list of [BLOCK_SKINS, FRAMES, EFFECTS, BACKGROUNDS, AVATARS])
+    for (const list of [BLOCK_SKINS, FRAMES, EFFECTS, BACKGROUNDS, BOMBS, AVATARS])
       for (const o of list as readonly { tier?: string }[]) if (o.tier) expect(TIERS.slice(1).map((t) => t.id)).toContain(o.tier);
   });
 

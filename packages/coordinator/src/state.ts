@@ -1,4 +1,6 @@
 import {
+  BOMB_BLASTS,
+  MAX_BOMB_BONUS,
   PlayerSim,
   cancelGarbage,
   deriveSeed,
@@ -7,6 +9,7 @@ import {
   type GarbageChunk,
   type LockResult,
   type Placement,
+  type BombBlast,
   type SerializedPlayerSim,
 } from "@tk/engine";
 import { cleanName, isBool, isCosmetics, isInt, isObj, isPid, isPlacement, isStr, type Cosmetics } from "./validate.js";
@@ -24,6 +27,44 @@ export interface Rules {
 }
 
 export const DEFAULT_RULES: Rules = { garbageDelayMs: 500, garbageCapPerLock: 8, garbageLagPieces: 6 };
+
+/** How many garbage rows carry a bomb. */
+export type BombFrequency = "off" | "sparse" | "half" | "every";
+export const BOMB_FREQUENCIES: readonly BombFrequency[] = ["off", "sparse", "half", "every"];
+
+/**
+ * Room options the host picks in the lobby. Replicated like everything else,
+ * and copied into the match at start so they can't change mid-game.
+ */
+export interface MatchOptions {
+  bombs: BombFrequency;
+  blast: BombBlast;
+  /** Extra attack lines per bomb detonated (0..MAX_BOMB_BONUS). */
+  bombBonus: number;
+}
+
+export const DEFAULT_MATCH_OPTIONS: MatchOptions = { bombs: "off", blast: "line", bombBonus: 1 };
+
+export function isMatchOptions(v: unknown): v is MatchOptions {
+  return (
+    isObj(v) &&
+    BOMB_FREQUENCIES.includes(v.bombs as BombFrequency) &&
+    BOMB_BLASTS.includes(v.blast as BombBlast) &&
+    isInt(v.bombBonus, 0, MAX_BOMB_BONUS)
+  );
+}
+
+const cleanOptions = (v: unknown): MatchOptions => (isMatchOptions(v) ? { bombs: v.bombs, blast: v.blast, bombBonus: v.bombBonus } : { ...DEFAULT_MATCH_OPTIONS });
+
+/** Bomb rows (0 = top) for a garbage chunk of `lines` rows. */
+export function bombRowsFor(freq: BombFrequency, lines: number): number[] {
+  if (freq === "off" || lines <= 0) return [];
+  if (freq === "sparse") return [0];
+  const step = freq === "half" ? 2 : 1;
+  const out: number[] = [];
+  for (let r = 0; r < lines; r += step) out.push(r);
+  return out;
+}
 
 export type Phase = "lobby" | "countdown" | "playing" | "ended";
 export type Role = "player" | "spectator";
@@ -93,6 +134,7 @@ export interface MatchState {
   garbageCounter: number;
   elapsedMs: number;
   result: MatchResult | null;
+  options: MatchOptions;
 }
 
 export interface RoomState {
@@ -103,6 +145,7 @@ export interface RoomState {
   lastResult: MatchResult | null;
   closed: boolean;
   matchCounter: number;
+  options: MatchOptions;
 }
 
 export type EntryBody =
@@ -116,6 +159,7 @@ export type EntryBody =
   | { k: "go" }
   | { k: "place"; playerId: string; t: number; pl: Placement }
   | { k: "target"; playerId: string; mode: TargetMode; target: string | null }
+  | { k: "options"; options: MatchOptions }
   | { k: "end"; reason: "no-contest" }
   | { k: "rematch" }
   | { k: "close" };
@@ -139,7 +183,7 @@ export type Effect =
 export type ApplyResult = { ok: true; effects: Effect[] } | { ok: false; error: string };
 
 export function createRoomState(): RoomState {
-  return { roster: [], nextSeat: 0, phase: "lobby", match: null, lastResult: null, closed: false, matchCounter: 0 };
+  return { roster: [], nextSeat: 0, phase: "lobby", match: null, lastResult: null, closed: false, matchCounter: 0, options: { ...DEFAULT_MATCH_OPTIONS } };
 }
 
 export const rosterIds = (s: RoomState): string[] => s.roster.map((r) => r.playerId);
@@ -250,7 +294,16 @@ function applyPlace(s: RoomState, e: Extract<EntryBody, { k: "place" }>, rules: 
       const g = mp.incoming[0]!;
       const take = Math.min(g.lines, cap);
       cap -= take;
-      mp.commanded.push({ id: `c${m.garbageCounter++}`, lines: take, holeCol: g.holeCol, from: g.from, issuedAtPiece: mp.sim.s.piecesPlaced });
+      const chunk: CommandedGarbage = { id: `c${m.garbageCounter++}`, lines: take, holeCol: g.holeCol, from: g.from, issuedAtPiece: mp.sim.s.piecesPlaced };
+      const bombRows = bombRowsFor(m.options.bombs, take);
+      if (bombRows.length > 0) {
+        // Any column but the hole.
+        const [c, next] = rngInt(m.rng, 9);
+        m.rng = next;
+        chunk.bombCol = c >= g.holeCol ? c + 1 : c;
+        chunk.bombRows = bombRows;
+      }
+      mp.commanded.push(chunk);
       if (take === g.lines) mp.incoming.shift();
       else g.lines -= take;
     }
@@ -320,10 +373,12 @@ export function applyEntry(s: RoomState, e: EntryBody, rules: Rules = DEFAULT_RU
       if (s.phase !== "lobby") return { ok: false, error: "bad-phase" };
       const participants = s.roster.filter((r) => r.role === "player").map((r) => r.playerId);
       if (participants.length < MIN_PLAYERS) return { ok: false, error: "not-enough-players" };
+      const options = cleanOptions(s.options);
+      const bombs = { blast: options.blast, bonus: options.bombBonus };
       const players: Record<string, MatchPlayer> = {};
       for (const pid of participants) {
         players[pid] = {
-          sim: PlayerSim.create(deriveSeed(e.seed, pid)),
+          sim: PlayerSim.create(deriveSeed(e.seed, pid), bombs),
           alive: true,
           placement: null,
           eliminatedBy: null,
@@ -338,7 +393,7 @@ export function applyEntry(s: RoomState, e: EntryBody, rules: Rules = DEFAULT_RU
           kos: 0,
         };
       }
-      s.match = { matchId: e.matchId, seed: e.seed >>> 0, participants, players, rng: deriveSeed(e.seed, "match"), garbageCounter: 0, elapsedMs: 0, result: null };
+      s.match = { matchId: e.matchId, seed: e.seed >>> 0, participants, players, rng: deriveSeed(e.seed, "match"), garbageCounter: 0, elapsedMs: 0, result: null, options };
       s.matchCounter++;
       s.phase = "countdown";
       for (const r of s.roster) r.ready = false;
@@ -355,6 +410,12 @@ export function applyEntry(s: RoomState, e: EntryBody, rules: Rules = DEFAULT_RU
       if (!mp) return { ok: false, error: "not-participant" };
       mp.targetMode = e.mode;
       mp.manualTarget = e.mode === "manual" ? e.target : null;
+      return ok();
+    }
+    case "options": {
+      if (s.phase !== "lobby") return { ok: false, error: "bad-phase" };
+      if (!isMatchOptions(e.options)) return { ok: false, error: "bad-options" };
+      s.options = cleanOptions(e.options);
       return ok();
     }
     case "end": {
@@ -405,11 +466,12 @@ export function serializeState(s: RoomState): SerializedRoomState {
               ...p,
               sim: p.sim.serialize(),
               incoming: p.incoming.map((g) => ({ ...g })),
-              commanded: p.commanded.map((g) => ({ ...g })),
+              commanded: p.commanded.map((g) => ({ ...g, ...(g.bombRows ? { bombRows: [...g.bombRows] } : {}) })),
             },
           ]),
         ),
         result: s.match.result ? structuredClone(s.match.result) : null,
+        options: { ...s.match.options },
       }
     : null;
   return {
@@ -420,6 +482,7 @@ export function serializeState(s: RoomState): SerializedRoomState {
     lastResult: s.lastResult ? structuredClone(s.lastResult) : null,
     closed: s.closed,
     matchCounter: s.matchCounter,
+    options: { ...s.options },
   };
 }
 
@@ -456,7 +519,7 @@ export function deserializeState(d: unknown): RoomState {
         placement: p.placement === null ? null : (p.placement as number),
         eliminatedBy: (p.eliminatedBy as string | null) ?? null,
         incoming: (p.incoming as IncomingGarbage[]).map((g) => ({ ...g })),
-        commanded: (p.commanded as CommandedGarbage[]).map((g) => ({ ...g })),
+        commanded: (p.commanded as CommandedGarbage[]).map((g) => ({ ...g, ...(Array.isArray(g.bombRows) ? { bombRows: [...g.bombRows] } : {}) })),
         targetMode: tm,
         manualTarget: (p.manualTarget as string | null) ?? null,
         lastAttacker: (p.lastAttacker as string | null) ?? null,
@@ -475,6 +538,7 @@ export function deserializeState(d: unknown): RoomState {
       garbageCounter: m.garbageCounter,
       elapsedMs: m.elapsedMs,
       result: (m.result as MatchResult | null) ?? null,
+      options: cleanOptions(m.options),
     };
   }
   return {
@@ -485,6 +549,7 @@ export function deserializeState(d: unknown): RoomState {
     lastResult: (d.lastResult as MatchResult | null) ?? null,
     closed: d.closed,
     matchCounter: d.matchCounter,
+    options: cleanOptions(d.options),
   };
 }
 
@@ -494,7 +559,7 @@ export function stateHash(s: RoomState): number {
 
 // ----------------------------------------------------------- entry validation
 
-const ENTRY_KINDS = new Set(["noop", "join", "presence", "leave", "ready", "cosmetics", "start", "go", "place", "target", "end", "rematch", "close"]);
+const ENTRY_KINDS = new Set(["noop", "join", "presence", "leave", "ready", "cosmetics", "start", "go", "place", "target", "options", "end", "rematch", "close"]);
 
 export function isLogEntry(v: unknown): v is LogEntry {
   if (!isObj(v) || !isInt(v.seq, 1, Number.MAX_SAFE_INTEGER) || !isInt(v.epoch, 1, Number.MAX_SAFE_INTEGER)) return false;
@@ -516,6 +581,8 @@ export function isLogEntry(v: unknown): v is LogEntry {
       return isPid(v.playerId) && typeof v.t === "number" && Number.isFinite(v.t) && v.t >= 0 && isPlacement(v.pl);
     case "target":
       return isPid(v.playerId) && (v.mode === "random" || v.mode === "manual" || v.mode === "revenge") && (v.target === null || isPid(v.target));
+    case "options":
+      return isMatchOptions(v.options);
     case "end":
       return v.reason === "no-contest";
     default:

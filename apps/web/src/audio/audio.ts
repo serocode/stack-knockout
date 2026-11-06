@@ -11,7 +11,7 @@ export type Sfx =
   | "move" | "rotate" | "hold" | "lock" | "hardDrop"
   | "clear1" | "clear2" | "clear3" | "clear4"
   | "tspin" | "b2b" | "combo" | "perfect"
-  | "attack" | "cancel" | "garbageIn" | "garbageWarn"
+  | "attack" | "cancel" | "garbageIn" | "garbageWarn" | "bomb"
   | "ko" | "win" | "lose" | "count" | "go" | "click" | "join" | "topOut";
 
 const midi = (n: number) => 440 * Math.pow(2, (n - 69) / 12);
@@ -290,6 +290,12 @@ class AudioEngine {
       case "garbageWarn":
         this.tone(bus, 440, now, 0.06, P.lead, { gain: 0.5 });
         this.tone(bus, 440, now + 0.12, 0.06, P.lead, { gain: 0.5 });
+        break;
+      case "bomb":
+        this.tone(bus, 120 * vary, now, 0.3, P.body, { gain: 1, slide: 32 });
+        this.noise(bus, now, 0.5, P.noise * 1.5, 900);
+        this.noise(bus, now + 0.02, 0.18, P.noise * 0.8, 4000, "highpass");
+        this.duck(0.5, 450);
         break;
       case "garbageIn":
         this.tone(bus, 140, now, 0.18, P.body, { gain: 1, slide: 50 });

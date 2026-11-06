@@ -1,4 +1,4 @@
-import type { Background, BlockCorners, BlockGap, BlockGlow, BlockPattern, BlockSkin, Garbage, Ghost } from "../cosmetics/catalog";
+import type { Background, BlockCorners, BlockGap, BlockGlow, BlockPattern, BlockSkin, Bomb, Garbage, Ghost } from "../cosmetics/catalog";
 
 /**
  * Canvas painters for every block skin, block shape option, ghost style,
@@ -17,6 +17,8 @@ export interface Look {
   background: Background;
   ghost: Ghost;
   garbage: Garbage;
+  /** Bomb cell style (cell value 9). */
+  bomb?: Bomb;
   corners?: BlockCorners;
   gap?: BlockGap;
   pattern?: BlockPattern;
@@ -518,9 +520,13 @@ function drawSkinned(ctx: CanvasRenderingContext2D, px: number, py: number, s: n
   ctx.drawImage(img, px - pad, py - pad, s + pad * 2, s + pad * 2);
 }
 
-/** Draw one block. value 1..7 = piece colour, 8 = garbage. gx/gy pick deterministic garbage texture. */
+/** Draw one block. value 1..7 = piece colour, 8 = garbage, 9 = bomb garbage. gx/gy pick deterministic garbage texture. */
 export function drawBlock(ctx: CanvasRenderingContext2D, px: number, py: number, s: number, value: number, look: Look, t: number, gx = 0, gy = 0): void {
   if (value === 8) return drawGarbage(ctx, px, py, s, look, t, gx, gy);
+  if (value === 9) {
+    drawGarbage(ctx, px, py, s, look, t, gx, gy);
+    return drawBomb(ctx, px, py, s, look.bomb ?? "classic", t, gx, gy);
+  }
   drawSkinned(ctx, px, py, s, look.palette[value - 1] ?? "#888888", look.skin, look, t);
 }
 
@@ -592,6 +598,221 @@ function drawGarbage(ctx: CanvasRenderingContext2D, px: number, py: number, s: n
       );
       return;
   }
+}
+
+// ------------------------------------------------------------------ bombs
+
+/** Static bomb bodies (cached per size); the animated sparkle/pulse is drawn live on top. */
+const BOMB_BODY: Record<Bomb, (c: CanvasRenderingContext2D, s: number) => void> = {
+  classic(c, s) {
+    backdrop(c, s, "rgba(10,10,14,0.55)");
+    const g = c.createRadialGradient(s * 0.42, s * 0.48, s * 0.03, s * 0.5, s * 0.58, s * 0.34);
+    g.addColorStop(0, "#5b5f6e");
+    g.addColorStop(1, "#111217");
+    c.fillStyle = g;
+    c.beginPath();
+    c.arc(s * 0.5, s * 0.58, s * 0.3, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#2b2d36";
+    c.fillRect(s * 0.6, s * 0.22, s * 0.14, s * 0.12);
+    c.strokeStyle = "#c9a36a";
+    c.lineWidth = Math.max(1, s * 0.06);
+    c.beginPath();
+    c.moveTo(s * 0.67, s * 0.23);
+    c.quadraticCurveTo(s * 0.72, s * 0.08, s * 0.84, s * 0.14);
+    c.stroke();
+    c.fillStyle = "rgba(255,255,255,0.35)";
+    c.beginPath();
+    c.arc(s * 0.4, s * 0.48, s * 0.07, 0, Math.PI * 2);
+    c.fill();
+  },
+  mine(c, s) {
+    backdrop(c, s, "rgba(10,14,12,0.55)");
+    c.strokeStyle = "#3a4440";
+    c.lineWidth = Math.max(1, s * 0.09);
+    c.lineCap = "round";
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      c.beginPath();
+      c.moveTo(s * 0.5 + Math.cos(a) * s * 0.2, s * 0.5 + Math.sin(a) * s * 0.2);
+      c.lineTo(s * 0.5 + Math.cos(a) * s * 0.4, s * 0.5 + Math.sin(a) * s * 0.4);
+      c.stroke();
+    }
+    const g = c.createRadialGradient(s * 0.42, s * 0.42, s * 0.02, s * 0.5, s * 0.5, s * 0.27);
+    g.addColorStop(0, "#6c7a74");
+    g.addColorStop(1, "#1d2422");
+    c.fillStyle = g;
+    c.beginPath();
+    c.arc(s * 0.5, s * 0.5, s * 0.26, 0, Math.PI * 2);
+    c.fill();
+  },
+  dynamite(c, s) {
+    backdrop(c, s, "rgba(20,8,8,0.5)");
+    for (let i = 0; i < 3; i++) {
+      const x = s * (0.24 + i * 0.18);
+      const g = c.createLinearGradient(x, 0, x + s * 0.17, 0);
+      g.addColorStop(0, "#d8423a");
+      g.addColorStop(0.5, "#ff6b5e");
+      g.addColorStop(1, "#9e221c");
+      c.fillStyle = g;
+      c.fillRect(x, s * 0.3, s * 0.17, s * 0.58);
+    }
+    c.fillStyle = "#2a2120";
+    c.fillRect(s * 0.2, s * 0.55, s * 0.6, s * 0.1);
+    c.strokeStyle = "#c9a36a";
+    c.lineWidth = Math.max(1, s * 0.06);
+    c.beginPath();
+    c.moveTo(s * 0.5, s * 0.3);
+    c.quadraticCurveTo(s * 0.52, s * 0.14, s * 0.7, s * 0.14);
+    c.stroke();
+  },
+  core(c, s) {
+    backdrop(c, s, "rgba(6,10,20,0.6)");
+    c.strokeStyle = "#5d6b8a";
+    c.lineWidth = Math.max(1, s * 0.08);
+    c.beginPath();
+    c.arc(s * 0.5, s * 0.5, s * 0.32, 0, Math.PI * 2);
+    c.stroke();
+    c.strokeStyle = "#2b3550";
+    c.lineWidth = Math.max(1, s * 0.05);
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      c.beginPath();
+      c.moveTo(s * 0.5 + Math.cos(a) * s * 0.32, s * 0.5 + Math.sin(a) * s * 0.32);
+      c.lineTo(s * 0.5 + Math.cos(a) * s * 0.44, s * 0.5 + Math.sin(a) * s * 0.44);
+      c.stroke();
+    }
+  },
+  crystal(c, s) {
+    backdrop(c, s, "rgba(16,6,24,0.55)");
+    const pts: [number, number][] = [[0.5, 0.12], [0.8, 0.42], [0.5, 0.9], [0.2, 0.42]];
+    const g = c.createLinearGradient(0, s * 0.12, 0, s * 0.9);
+    g.addColorStop(0, "#f3c8ff");
+    g.addColorStop(0.5, "#b05cf0");
+    g.addColorStop(1, "#5a1d8f");
+    c.fillStyle = g;
+    c.beginPath();
+    pts.forEach(([x, y], i) => (i ? c.lineTo(x * s, y * s) : c.moveTo(x * s, y * s)));
+    c.closePath();
+    c.fill();
+    c.strokeStyle = "rgba(255,255,255,0.45)";
+    c.lineWidth = Math.max(1, s * 0.035);
+    c.beginPath();
+    c.moveTo(s * 0.2, s * 0.42); c.lineTo(s * 0.8, s * 0.42);
+    c.moveTo(s * 0.5, s * 0.12); c.lineTo(s * 0.38, s * 0.42); c.lineTo(s * 0.5, s * 0.9);
+    c.moveTo(s * 0.5, s * 0.12); c.lineTo(s * 0.62, s * 0.42); c.lineTo(s * 0.5, s * 0.9);
+    c.stroke();
+  },
+  atomic(c, s) {
+    backdrop(c, s, "rgba(8,16,6,0.6)");
+    c.fillStyle = "#f2d43a";
+    c.beginPath();
+    c.arc(s * 0.5, s * 0.5, s * 0.36, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#16160f";
+    for (let i = 0; i < 3; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI * 2) / 3;
+      c.beginPath();
+      c.moveTo(s * 0.5, s * 0.5);
+      c.arc(s * 0.5, s * 0.5, s * 0.31, a - Math.PI / 6, a + Math.PI / 6);
+      c.closePath();
+      c.fill();
+    }
+    c.fillStyle = "#f2d43a";
+    c.beginPath();
+    c.arc(s * 0.5, s * 0.5, s * 0.1, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#16160f";
+    c.beginPath();
+    c.arc(s * 0.5, s * 0.5, s * 0.06, 0, Math.PI * 2);
+    c.fill();
+  },
+};
+
+function backdrop(c: CanvasRenderingContext2D, s: number, color: string): void {
+  c.fillStyle = color;
+  c.fillRect(s * 0.08, s * 0.08, s * 0.84, s * 0.84);
+}
+
+function spark(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, k: number): void {
+  const r = s * (0.07 + 0.05 * k);
+  ctx.fillStyle = `rgba(255,170,60,${0.35 + 0.3 * k})`;
+  ctx.beginPath();
+  ctx.arc(x, y, r * 1.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#fff4c2";
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawBomb(ctx: CanvasRenderingContext2D, px: number, py: number, s: number, style: Bomb, t: number, gx: number, gy: number): void {
+  ctx.drawImage(staticSprite(`bomb|${style}|${s}`, s, (c) => BOMB_BODY[style](c, s)), px, py, s, s);
+  // Per-cell phase offset so a column of bombs doesn't pulse in lockstep.
+  const ph = t / 1000 + (gx * 0.37 + gy * 0.61);
+  const wave = 0.5 + 0.5 * Math.sin(ph * 9);
+  ctx.save();
+  switch (style) {
+    case "classic":
+      spark(ctx, px + s * 0.84, py + s * 0.14, s, (0.5 + 0.5 * Math.sin(ph * 31)) * wave);
+      break;
+    case "dynamite":
+      spark(ctx, px + s * 0.7, py + s * 0.14, s, (0.5 + 0.5 * Math.sin(ph * 29)) * wave);
+      break;
+    case "mine": {
+      const on = Math.sin(ph * 6) > 0;
+      ctx.fillStyle = on ? "#ff4b3e" : "#5a1a16";
+      ctx.beginPath();
+      ctx.arc(px + s * 0.5, py + s * 0.5, s * 0.09, 0, Math.PI * 2);
+      ctx.fill();
+      if (on) {
+        ctx.fillStyle = "rgba(255,75,62,0.3)";
+        ctx.beginPath();
+        ctx.arc(px + s * 0.5, py + s * 0.5, s * 0.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      break;
+    }
+    case "core": {
+      const k = 0.5 + 0.5 * Math.sin(ph * 4);
+      const g = ctx.createRadialGradient(px + s * 0.5, py + s * 0.5, 0, px + s * 0.5, py + s * 0.5, s * 0.28);
+      g.addColorStop(0, "#ffffff");
+      g.addColorStop(0.35, `rgba(90,220,255,${0.75 + 0.25 * k})`);
+      g.addColorStop(1, "rgba(40,120,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(px + s * 0.5, py + s * 0.5, s * (0.2 + 0.08 * k), 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    case "crystal": {
+      const k = 0.5 + 0.5 * Math.sin(ph * 3);
+      ctx.fillStyle = `rgba(230,170,255,${0.12 + 0.2 * k})`;
+      ctx.fillRect(px + s * 0.08, py + s * 0.08, s * 0.84, s * 0.84);
+      const tw = Math.max(0, Math.sin(ph * 2.3));
+      if (tw > 0.6) {
+        ctx.strokeStyle = `rgba(255,255,255,${(tw - 0.6) * 2.5})`;
+        ctx.lineWidth = Math.max(1, s * 0.04);
+        const cx = px + s * 0.62;
+        const cy = py + s * 0.3;
+        ctx.beginPath();
+        ctx.moveTo(cx - s * 0.1, cy); ctx.lineTo(cx + s * 0.1, cy);
+        ctx.moveTo(cx, cy - s * 0.1); ctx.lineTo(cx, cy + s * 0.1);
+        ctx.stroke();
+      }
+      break;
+    }
+    case "atomic": {
+      const k = 0.5 + 0.5 * Math.sin(ph * 3.5);
+      ctx.strokeStyle = `rgba(120,255,90,${0.35 + 0.45 * k})`;
+      ctx.lineWidth = Math.max(1, s * 0.07);
+      ctx.beginPath();
+      ctx.arc(px + s * 0.5, py + s * 0.5, s * 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    }
+  }
+  ctx.restore();
 }
 
 export function drawGhost(ctx: CanvasRenderingContext2D, px: number, py: number, s: number, value: number, look: Look, t: number): void {

@@ -9,6 +9,7 @@ import {
   BLOCK_GLOWS,
   BLOCK_PATTERNS,
   BLOCK_SKINS,
+  BOMBS,
   EFFECTS,
   FRAMES,
   GARBAGES,
@@ -51,8 +52,8 @@ function demoBoard(): Board {
     "6.3337.8..",
     "66533771.8",
     "8885544188",
-    "88.8888888",
-    "8888.88888",
+    "88.8898888",
+    "8888.89888",
   ];
   rows.forEach((r, i) => {
     const y = 40 - rows.length + i;
@@ -265,6 +266,9 @@ export function Customize({ onClose, embedded = false }: { onClose: () => void; 
                 <Tiles career={career} options={GHOSTS} value={c.ghost} onPick={(ghost) => setCosmetics({ ghost })} />
                 <h3>Garbage blocks</h3>
                 <Tiles career={career} options={GARBAGES} value={c.garbage} onPick={(garbage) => setCosmetics({ garbage })} render={(o) => <Swatch look={{ ...look, garbage: o.id }} values={[8, 8, 8]} />} />
+                <h3>Bombs</h3>
+                <p className="muted small">Shown when the room host turns on bomb garbage. Other players see your bombs in your style.</p>
+                <Tiles career={career} options={BOMBS} value={c.bomb} onPick={(bomb) => setCosmetics({ bomb })} render={(o) => <Swatch look={{ ...look, bomb: o.id }} values={[8, 9, 8]} size={22} />} />
               </>
             )}
 

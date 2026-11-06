@@ -7,9 +7,11 @@ export type PieceType = (typeof PIECE_TYPES)[number];
 export type Rotation = 0 | 1 | 2 | 3;
 export type Cell = readonly [x: number, y: number];
 
-/** Cell value written to the board for each piece type (0 = empty, 8 = garbage). */
+/** Cell value written to the board for each piece type (0 = empty, 8 = garbage, 9 = bomb garbage). */
 export const PIECE_CELL: Record<PieceType, number> = { I: 1, O: 2, T: 3, S: 4, Z: 5, J: 6, L: 7 };
 export const GARBAGE_CELL = 8;
+/** A garbage cell that detonates when its row is cleared. */
+export const BOMB_CELL = 9;
 
 const BASE: Record<PieceType, { size: number; cells: Cell[] }> = {
   I: { size: 4, cells: [[0, 1], [1, 1], [2, 1], [3, 1]] },

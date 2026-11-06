@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { LiveController, type Command, type LockResult, type PiecePos, type Placement, type PlayerSim } from "@tk/engine";
+import { LiveController, VISIBLE_TOP, type Command, type LockResult, type PiecePos, type Placement, type PlayerSim } from "@tk/engine";
 import { audio } from "../audio/audio";
 import { steerTo } from "../coach/coach";
 import { fx, tierFor, vibrate } from "../fx/fx";
@@ -101,8 +101,16 @@ export function Playfield({ sim, getSim, paused, gravityMs, cellSize, incomingQu
         if (P.haptics) vibrate(8);
       } else {
         const now = performance.now();
-        flashes = flashes.concat(cleared.map((row) => ({ row, at: now })));
-        if (boardRef.current) fx.rows(boardRef.current, cleared, cellSize, P.cosmetics.effect, tier, look.palette);
+        // Bomb blasts can remove more rows than the piece completed.
+        const rows = r.removedRows.length > 0 ? r.removedRows.map((y) => y - VISIBLE_TOP).filter((y) => y >= 0) : cleared;
+        flashes = flashes.concat(rows.map((row) => ({ row, at: now })));
+        if (boardRef.current) fx.rows(boardRef.current, rows, cellSize, P.cosmetics.effect, tier, look.palette);
+        if (r.bombs > 0) {
+          audio.play("bomb");
+          if (boardRef.current) fx.blast(boardRef.current, r.detonations.map(([x, y]) => [x, y - VISIBLE_TOP] as [number, number]), cellSize);
+          fx.shake(wellRef.current, Math.min(0.6, 0.2 * r.bombs));
+          if (P.haptics) vibrate([30, 20, 50]);
+        }
         if (r.perfectClear) audio.play("perfect");
         else if (r.tspin !== "none") audio.play("tspin");
         else audio.play(`clear${Math.min(4, r.lines) as 1 | 2 | 3 | 4}`);

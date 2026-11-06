@@ -45,10 +45,23 @@ Import the repository and leave **Root Directory** empty (the repo root).
 to `dist`. Framework preset "Other" or "Vite" both work; leave the build and
 output overrides off. No environment variables or functions are needed.
 
+## Bomb garbage
+
+The host can turn on bomb garbage in the lobby. Some incoming garbage rows then
+carry a bomb (one per batch, every other row, or every row). Clear a bomb's row
+and it goes off:
+
+* **Line** also clears the row beneath it.
+* **Area** destroys the 8 cells around it.
+* **Column** destroys everything below it.
+
+Bombs caught in a blast go off too, so stacked bombs chain. Each bomb can also
+add 0 to 3 bonus attack lines. The rules are fixed when the match starts.
+
 ## Customize
 
 Menu → Customize (or 🎨 inside a room): block skins, colours, frames, effects,
-backgrounds, ghost and garbage styles, avatar, UI theme, sound pack and music.
+backgrounds, ghost, garbage and bomb styles, avatar, UI theme, sound pack and music.
 Other players see your look; theme and audio are just for you.
 Premium items (◆) unlock as your career score grows — every point you score in
 practice or online counts. Progress, stats and achievements are saved in this

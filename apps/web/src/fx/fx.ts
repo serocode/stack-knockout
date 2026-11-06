@@ -149,6 +149,42 @@ class FxLayer {
     this.kick();
   }
 
+  /**
+   * Bomb detonations: a hot flash, a shockwave ring and flying debris at each
+   * cell. `cells` are visible-board coordinates [col, row].
+   */
+  blast(canvas: HTMLCanvasElement, cells: readonly [number, number][], cell: number): void {
+    if (cells.length === 0) return;
+    this.ensure();
+    const r = canvas.getBoundingClientRect();
+    const hot = ["#fff4c2", "#ffd36b", "#ffb347", "#ff6a2b", "#ff3b2f"];
+    for (const [cx, cy] of cells.slice(0, 12)) {
+      const x = r.left + (cx + 0.5) * cell;
+      const y = r.top + (cy + 0.5) * cell;
+      if (!this.reduceFlashing) this.parts.push({ x, y, vx: 0, vy: 0, g: 0, life: 0, max: 180, size: cell * 1.4, color: "#fff4c2", shape: "spark", rot: 0, vr: 0 });
+      this.parts.push({ x, y, vx: 0, vy: 0, g: 0, life: 0, max: 420, size: cell * 2.6, color: "#ffb347", shape: "ring", rot: 0, vr: 0 });
+      const n = this.budget(22);
+      for (let i = 0; i < n; i++) {
+        const a = rand(0, Math.PI * 2);
+        const sp = rand(0.12, 0.42);
+        this.parts.push({
+          x, y,
+          vx: Math.cos(a) * sp,
+          vy: Math.sin(a) * sp - 0.08,
+          g: i % 3 === 0 ? 0.0011 : -0.0004,
+          life: 0,
+          max: rand(380, 760),
+          size: rand(2, 4.5),
+          color: i % 3 === 0 ? "#3a3a44" : pickOf(hot),
+          shape: i % 3 === 0 ? "square" : "ember",
+          rot: rand(0, Math.PI * 2),
+          vr: rand(-0.02, 0.02),
+        });
+      }
+    }
+    this.kick();
+  }
+
   /** Burst over a set of board rows, given the board canvas and cell size. */
   rows(canvas: HTMLCanvasElement, rows: number[], cell: number, effect: Effect, tier: Tier, palette?: readonly string[]): void {
     const r = canvas.getBoundingClientRect();

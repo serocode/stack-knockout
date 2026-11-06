@@ -5,7 +5,7 @@
  * or balance.
  *
  * Shared with other players (they see your look): block skin + shape options,
- * palette, frame, effect, background, ghost, garbage, avatar, tier badge.
+ * palette, frame, effect, background, ghost, garbage, bomb, avatar, tier badge.
  * Local only (your own screen): UI theme, sounds, music.
  *
  * Premium items carry a `tier`; they unlock when your career score (the sum
@@ -164,6 +164,17 @@ export const GARBAGES = opts([
 ] as const);
 export type Garbage = (typeof GARBAGES)[number]["id"];
 
+/** How bomb cells look (only appear when the room host turns bombs on). */
+export const BOMBS = opts([
+  { id: "classic", label: "Round bomb", hint: "Black ball with a lit fuse" },
+  { id: "mine", label: "Sea mine", hint: "Spikes and a blinking light" },
+  { id: "dynamite", label: "Dynamite", hint: "A bundle of red sticks" },
+  { id: "core", label: "Energy core", hint: "A pulsing orb of light" },
+  { id: "crystal", label: "Volatile crystal", hint: "A gem that hums with energy", tier: "silver" },
+  { id: "atomic", label: "Atomic", hint: "Radioactive, glowing green", tier: "gold" },
+] as const);
+export type Bomb = (typeof BOMBS)[number]["id"];
+
 export const THEMES = opts([
   { id: "midnight", label: "Midnight" },
   { id: "daylight", label: "Daylight" },
@@ -228,6 +239,7 @@ export interface Cosmetics {
   background: Background;
   ghost: Ghost;
   garbage: Garbage;
+  bomb: Bomb;
   avatar: string;
 }
 
@@ -243,6 +255,7 @@ export const DEFAULT_COSMETICS: Cosmetics = {
   background: "grid",
   ghost: "translucent",
   garbage: "stone",
+  bomb: "classic",
   avatar: "🦊",
 };
 
@@ -273,6 +286,7 @@ export function sanitizeCosmetics(v: Partial<Record<keyof Cosmetics, unknown>> |
     background: pick(BACKGROUNDS, c.background, DEFAULT_COSMETICS.background),
     ghost: pick(GHOSTS, c.ghost, DEFAULT_COSMETICS.ghost),
     garbage: pick(GARBAGES, c.garbage, DEFAULT_COSMETICS.garbage),
+    bomb: pick(BOMBS, c.bomb, DEFAULT_COSMETICS.bomb),
     avatar: sanitizeAvatar(c.avatar),
   };
 }
@@ -289,6 +303,7 @@ export function enforceUnlocks(c: Cosmetics, careerScore: number): Cosmetics {
     frame: ok(FRAMES, c.frame, DEFAULT_COSMETICS.frame),
     effect: ok(EFFECTS, c.effect, DEFAULT_COSMETICS.effect),
     background: ok(BACKGROUNDS, c.background, DEFAULT_COSMETICS.background),
+    bomb: ok(BOMBS, c.bomb, DEFAULT_COSMETICS.bomb),
     avatar: ok(AVATARS, c.avatar, DEFAULT_COSMETICS.avatar),
     palette: pal && !isUnlocked(pal, careerScore) ? [...DEFAULT_PALETTE] : c.palette,
   };
@@ -308,6 +323,7 @@ export function toWire(c: Cosmetics, tier?: TierId): Record<string, string> {
     bg: c.background,
     ghost: c.ghost,
     garb: c.garbage,
+    bmb: c.bomb,
     av: c.avatar,
     ...(tier ? { tier } : {}),
   };
@@ -328,6 +344,7 @@ export function fromWire(w: Record<string, string> | undefined): Cosmetics {
     background: w?.bg,
     ghost: w?.ghost,
     garbage: w?.garb,
+    bomb: w?.bmb,
     avatar: w?.av,
   });
 }
@@ -351,6 +368,7 @@ export function rewardsFor(tier: TierId): { kind: string; label: string }[] {
   add("Background", BACKGROUNDS);
   add("Pattern", BLOCK_PATTERNS);
   add("Glow", BLOCK_GLOWS);
+  add("Bomb", BOMBS);
   add("Avatar", AVATARS);
   PRESET_PALETTES.filter((p) => p.tier === tier).forEach((p) => out.push({ kind: "Colours", label: p.label }));
   return out;

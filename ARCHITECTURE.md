@@ -139,7 +139,10 @@ All authoritative state is one deterministic state machine
 (`coordinator/src/state.ts`) driven by an append-only log. Only the host
 appends; everyone applies the same entries in the same order and reaches the
 same state hash. Entries: `join, presence, leave, ready, cosmetics, start, go,
-place, target, end, rematch, close, noop`.
+place, target, options, end, rematch, close, noop`. `options` holds the
+host's lobby settings (bomb garbage). They are copied into the match at
+`start`, so they can't change mid-game. Bomb positions are drawn from the
+match RNG when garbage is ordered, so every peer gets the same board.
 
 Every authoritative message carries **match id, host id, host epoch, sequence
 numbers and a message id** (spec §6 "Host Epoch").

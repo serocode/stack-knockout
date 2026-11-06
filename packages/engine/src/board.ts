@@ -1,4 +1,4 @@
-import { GARBAGE_CELL, PIECE_CELL, SHAPES, kicksFor, type PieceType, type Rotation } from "./pieces.js";
+import { BOMB_CELL, GARBAGE_CELL, PIECE_CELL, SHAPES, kicksFor, type PieceType, type Rotation } from "./pieces.js";
 
 export const BOARD_WIDTH = 10;
 /** 20 visible rows plus a 20-row buffer above the skyline. */
@@ -102,18 +102,108 @@ export function isEmpty(board: Board): boolean {
 
 /**
  * Pushes `lines` garbage rows in from the bottom with a single hole column.
+ * Rows listed in `bombRows` (0 = the topmost new row) get a bomb at `bombCol`.
  * Returns true if any block was pushed off the top of the matrix (top-out).
  */
-export function insertGarbage(board: Board, lines: number, holeCol: number): boolean {
+export function insertGarbage(board: Board, lines: number, holeCol: number, bombCol = -1, bombRows: readonly number[] = []): boolean {
   if (lines <= 0) return false;
   const n = Math.min(lines, BOARD_HEIGHT);
   let overflow = false;
   for (let i = 0; i < n * BOARD_WIDTH; i++) if (board[i] !== 0) overflow = true;
   board.copyWithin(0, n * BOARD_WIDTH);
   for (let y = BOARD_HEIGHT - n; y < BOARD_HEIGHT; y++) {
-    for (let x = 0; x < BOARD_WIDTH; x++) board[y * BOARD_WIDTH + x] = x === holeCol ? 0 : GARBAGE_CELL;
+    const bomb = bombCol >= 0 && bombRows.includes(y - (BOARD_HEIGHT - n)) ? bombCol : -1;
+    for (let x = 0; x < BOARD_WIDTH; x++) board[y * BOARD_WIDTH + x] = x === holeCol ? 0 : x === bomb ? BOMB_CELL : GARBAGE_CELL;
   }
   return overflow;
+}
+
+/**
+ * What a bomb destroys when its row is cleared:
+ * - `line`: the whole row beneath it, as if that row were cleared too.
+ * - `area`: the 8 cells around it.
+ * - `column`: every cell below it, down to the floor.
+ * Any bomb caught in a blast detonates as well (chain reaction).
+ */
+export type BombBlast = "line" | "area" | "column";
+export const BOMB_BLASTS: readonly BombBlast[] = ["line", "area", "column"];
+
+export interface ClearOutcome {
+  /** Rows the player completed (drives the attack/score tables). */
+  lines: number;
+  /** Extra rows removed by `line` blasts. */
+  blastedRows: number;
+  /** Bombs that went off, in board coordinates before anything moved. */
+  detonations: [x: number, y: number][];
+  /** Every row index removed (completed + blasted), before anything moved. */
+  removedRows: number[];
+}
+
+/**
+ * Line clear with bomb detonation. Full rows are found first; bombs inside
+ * them detonate (chaining), then blasted cells are emptied and all removed
+ * rows collapse. Without bombs on the board this is identical to clearLines.
+ */
+export function clearLinesWithBombs(board: Board, blast: BombBlast): ClearOutcome {
+  const W = BOARD_WIDTH;
+  const removed = new Set<number>();
+  for (let y = 0; y < BOARD_HEIGHT; y++) {
+    let full = true;
+    for (let x = 0; x < W; x++) if (board[y * W + x] === 0) { full = false; break; }
+    if (full) removed.add(y);
+  }
+  const lines = removed.size;
+  const queue: [number, number][] = [];
+  const seen = new Set<number>();
+  const arm = (x: number, y: number) => {
+    const i = y * W + x;
+    if (board[i] === BOMB_CELL && !seen.has(i)) {
+      seen.add(i);
+      queue.push([x, y]);
+    }
+  };
+  for (const y of removed) for (let x = 0; x < W; x++) arm(x, y);
+
+  const wiped = new Set<number>();
+  const detonations: [number, number][] = [];
+  let blastedRows = 0;
+  while (queue.length > 0) {
+    const [bx, by] = queue.shift()!;
+    detonations.push([bx, by]);
+    if (blast === "line") {
+      const y = by + 1;
+      if (y < BOARD_HEIGHT && !removed.has(y)) {
+        removed.add(y);
+        blastedRows++;
+        for (let x = 0; x < W; x++) arm(x, y);
+      }
+    } else {
+      const cells: [number, number][] = [];
+      if (blast === "area") {
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) cells.push([bx + dx, by + dy]);
+      } else {
+        for (let y = by + 1; y < BOARD_HEIGHT; y++) cells.push([bx, y]);
+      }
+      for (const [x, y] of cells) {
+        if (x < 0 || x >= W || y < 0 || y >= BOARD_HEIGHT) continue;
+        arm(x, y);
+        wiped.add(y * W + x);
+      }
+    }
+  }
+  for (const i of wiped) board[i] = 0;
+  const removedRows = [...removed].sort((a, b) => a - b);
+  if (removedRows.length > 0) {
+    // Compact: copy surviving rows downward, bottom first.
+    let dst = BOARD_HEIGHT - 1;
+    for (let y = BOARD_HEIGHT - 1; y >= 0; y--) {
+      if (removed.has(y)) continue;
+      if (dst !== y) board.copyWithin(dst * W, y * W, y * W + W);
+      dst--;
+    }
+    board.fill(0, 0, (dst + 1) * W);
+  }
+  return { lines, blastedRows, detonations, removedRows };
 }
 
 export function boardToString(board: Board): string {
@@ -123,7 +213,7 @@ export function boardToString(board: Board): string {
 }
 
 export function boardFromString(s: string): Board {
-  if (s.length !== BOARD_WIDTH * BOARD_HEIGHT || !/^[0-8]+$/.test(s)) throw new Error("invalid board string");
+  if (s.length !== BOARD_WIDTH * BOARD_HEIGHT || !/^[0-9]+$/.test(s)) throw new Error("invalid board string");
   const b = createBoard();
   for (let i = 0; i < s.length; i++) b[i] = parseInt(s[i]!, 16);
   return b;

@@ -14,6 +14,7 @@ export const DEFAULT_LOOK: Look = {
   background: DEFAULT_COSMETICS.background,
   ghost: DEFAULT_COSMETICS.ghost,
   garbage: DEFAULT_COSMETICS.garbage,
+  bomb: DEFAULT_COSMETICS.bomb,
 };
 
 export const lookOf = (c: Cosmetics): Look => ({
@@ -22,6 +23,7 @@ export const lookOf = (c: Cosmetics): Look => ({
   background: c.background,
   ghost: c.ghost,
   garbage: c.garbage,
+  bomb: c.bomb,
   corners: c.corners,
   gap: c.gap,
   pattern: c.pattern,

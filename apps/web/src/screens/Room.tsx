@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LogoMark } from "../ui/Logo";
 import { PingBadge } from "../ui/Ping";
-import type { Coordinator, CoordinatorEvent, MatchPlayer, RoomState } from "@tk/coordinator";
-import { clearLines, pieceCells, spawnPos, writePiece, type Placement, type PiecePos, type PlayerSim, type Rotation } from "@tk/engine";
+import { BOMB_FREQUENCIES, type BombFrequency, type Coordinator, type CoordinatorEvent, type MatchOptions, type MatchPlayer, type RoomState } from "@tk/coordinator";
+import { BOMB_BLASTS, MAX_BOMB_BONUS, VISIBLE_TOP, clearLinesWithBombs, pieceCells, type BombBlast, spawnPos, writePiece, type Placement, type PiecePos, type PlayerSim, type Rotation } from "@tk/engine";
 import { buildInviteUrl, formatSecret, type RoomCredentials } from "@tk/net";
 import { audio } from "../audio/audio";
 import { CALLOUTS, bestSuggestion, calloutOf, coachColor, dropAt, reachable } from "../coach/coach";
@@ -155,6 +155,11 @@ export function Room({ creds, mode, name: nameProp, create, go }: { creds: RoomC
                 const el = boardEl(f.playerId);
                 const tier = tierFor(f.result);
                 if (el && tier) fx.burst(rectOf(el), cosOf(f.playerId).effect, Math.min(2, tier) as 1 | 2, cosOf(f.playerId).palette);
+                const canvas = el?.querySelector("canvas");
+                if (canvas && f.result.bombs > 0) {
+                  const cell = canvas.getBoundingClientRect().width / 10;
+                  fx.blast(canvas, f.result.detonations.map(([x, y]) => [x, y - VISIBLE_TOP] as [number, number]), cell);
+                }
               }
               break;
             case "match-start":
@@ -329,6 +334,7 @@ function Lobby({ coord, st, creds, mode, onCustomize }: { coord: Coordinator; st
             </li>
           ))}
         </ul>
+        <MatchRules coord={coord} options={st.options} editable={v.isHost} />
         <div className="row">
           {!v.isHost && me && (
             <button className={me.ready ? "ghost" : ""} onClick={() => coord.setReady(!me.ready)}>
@@ -383,6 +389,62 @@ function Lobby({ coord, st, creds, mode, onCustomize }: { coord: Coordinator; st
           </button>
         </div>
       </section>
+    </div>
+  );
+}
+
+const BOMB_FREQ_LABEL: Record<BombFrequency, string> = { off: "Off", sparse: "One per batch", half: "Every other row", every: "Every row" };
+const BLAST_LABEL: Record<BombBlast, { label: string; hint: string }> = {
+  line: { label: "Line", hint: "Also clears the row beneath it" },
+  area: { label: "Area", hint: "Destroys the 8 cells around it" },
+  column: { label: "Column", hint: "Destroys everything below it" },
+};
+
+/** One-line summary of the room's bomb rules, e.g. "💣 Every row · Line · +1". */
+export function bombSummary(o: MatchOptions): string | null {
+  if (o.bombs === "off") return null;
+  return `💣 ${BOMB_FREQ_LABEL[o.bombs]} · ${BLAST_LABEL[o.blast].label} blast${o.bombBonus ? ` · +${o.bombBonus} attack` : ""}`;
+}
+
+/** Host-set room rules. Everyone sees them; only the host can change them (lobby only). */
+function MatchRules({ coord, options, editable }: { coord: Coordinator; options: MatchOptions; editable: boolean }) {
+  const set = (patch: Partial<MatchOptions>) => coord.setOptions({ ...options, ...patch });
+  const on = options.bombs !== "off";
+  return (
+    <div className="match-rules">
+      <h3>Bomb garbage</h3>
+      <p className="muted small">
+        Some garbage rows carry a bomb. Clear a bomb's row and it blows up{on ? `: ${BLAST_LABEL[options.blast].hint.toLowerCase()}` : ""}. Bombs caught in a blast go off too.
+        {!editable && " Only the host can change these."}
+      </p>
+      <label>Bombs</label>
+      <div className="seg">
+        {BOMB_FREQUENCIES.map((f) => (
+          <button key={f} className={`small ${options.bombs === f ? "on" : "ghost"}`} disabled={!editable} onClick={() => set({ bombs: f })}>
+            {BOMB_FREQ_LABEL[f]}
+          </button>
+        ))}
+      </div>
+      {on && (
+        <>
+          <label>Blast</label>
+          <div className="seg">
+            {BOMB_BLASTS.map((b) => (
+              <button key={b} className={`small ${options.blast === b ? "on" : "ghost"}`} disabled={!editable} title={BLAST_LABEL[b].hint} onClick={() => set({ blast: b })}>
+                {BLAST_LABEL[b].label}
+              </button>
+            ))}
+          </div>
+          <label>Bonus attack per bomb</label>
+          <div className="seg">
+            {Array.from({ length: MAX_BOMB_BONUS + 1 }, (_, n) => (
+              <button key={n} className={`small ${options.bombBonus === n ? "on" : "ghost"}`} disabled={!editable} onClick={() => set({ bombBonus: n })}>
+                {n === 0 ? "None" : `+${n}`}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -492,7 +554,7 @@ function opponentView(coord: Coordinator, pid: string, sim: PlayerSim): { board:
   if (pending) {
     board = board.slice();
     writePiece(board, lk.piece);
-    clearLines(board);
+    clearLinesWithBombs(board, sim.s.bombs.blast);
   }
   const want = pending ? placed + 1 : placed;
   return { board, active: rp && rp.idx === want && now - rp.at < 1500 ? rp.piece : null };
@@ -610,6 +672,7 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
     return r;
   };
 
+  const bombTag = bombSummary(m.options);
   const clock = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, "0")}`;
   const targetBar = meMp && meMp.alive && (
     <div className="targeting">
@@ -620,6 +683,7 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
         </button>
       ))}
       <span className="muted small">{meMp.targetMode === "manual" ? "manual — tap another board to switch" : "or tap a board"}</span>
+      {narrow && bombTag && <span className="chip warn bomb-tag">{bombTag}</span>}
     </div>
   );
 
@@ -632,7 +696,7 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
       <div className="match spectate">
         <div className="spectate-head">
           <h3>{meMp ? `You placed #${meMp.placement} — spectating` : "Spectating — you'll play next round"}</h3>
-          <span className="muted small">{alive} alive · {clock}</span>
+          <span className="muted small">{alive} alive · {clock}{bombTag ? ` · ${bombTag}` : ""}</span>
           {canCoachAny && !coaching && <p className="coach-prompt">💡 Tap a board to coach that player — suggest where to drop their piece</p>}
         </div>
         {coaching && <CoachPanel key={coaching} coord={coord} st={st} pid={coaching} viewport={viewport} onClose={() => setCoachPick(null)} />}
@@ -662,6 +726,7 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
       {!narrow && (
         <aside className="match-side">
           <div className="muted small">{alive} alive · {clock}</div>
+          {bombTag && <div className="chip warn bomb-tag">{bombTag}</div>}
           <Rankings coord={coord} st={st} />
         </aside>
       )}

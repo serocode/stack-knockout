@@ -552,3 +552,10 @@ button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 4
 .ping-chip { display: inline-flex; align-items: center; }
 .ping-chip .ping { font-size: 12px; }
 .opp-meta .ping { font-size: inherit; }
+
+/* Bomb garbage rules (lobby) and the in-match reminder */
+.match-rules { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 4px; }
+.match-rules h3 { margin-bottom: 4px; }
+.match-rules .seg button:disabled { opacity: 0.85; cursor: default; }
+.match-rules .seg button.ghost:disabled { opacity: 0.45; }
+.bomb-tag { display: inline-block; margin-top: 6px; }
