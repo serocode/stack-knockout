@@ -35,11 +35,12 @@ export async function openSession(opts: { creds: RoomCredentials; mode: NetMode;
     const { TrysteroTransport, webrtcSignalingAvailable } = await import("@tk/net/trystero");
     if (!webrtcSignalingAvailable()) throw new Error("no-webrtc");
     const s = loadSettings();
+    const turn = turnConfig(s);
     transport = new TrysteroTransport({
       appId: APP_ID,
       roomId: signalingRoomId(opts.creds.roomCode),
       password: opts.creds.secret,
-      ...(s.turnUrl ? { turn: [{ urls: s.turnUrl, username: s.turnUser || undefined, credential: s.turnCredential || undefined }] } : {}),
+      ...(turn ? { turn: [turn] } : {}),
       ...(s.relayUrls.trim() ? { relayUrls: s.relayUrls.split(/\s+/).filter(Boolean) } : {}),
     });
   }
@@ -90,6 +91,24 @@ export async function openSession(opts: { creds: RoomCredentials; mode: NetMode;
       release();
     },
   };
+}
+
+/**
+ * TURN relay for networks that block direct peer-to-peer (school/office
+ * Wi-Fi). Settings win; otherwise use the server baked in at build time via
+ * VITE_TURN_URLS / VITE_TURN_USER / VITE_TURN_CREDENTIAL, so players don't
+ * each have to configure it. URLs are whitespace-separated; list a
+ * `turns:...:443?transport=tcp` entry, since strict networks often allow only
+ * TLS on port 443.
+ */
+function turnConfig(s: ReturnType<typeof loadSettings>): { urls: string[]; username?: string; credential?: string } | null {
+  const env = import.meta.env;
+  const fromSettings = s.turnUrl.trim() !== "";
+  const urls = (fromSettings ? s.turnUrl : String(env.VITE_TURN_URLS ?? "")).split(/\s+/).filter(Boolean);
+  if (urls.length === 0) return null;
+  const username = fromSettings ? s.turnUser : String(env.VITE_TURN_USER ?? "");
+  const credential = fromSettings ? s.turnCredential : String(env.VITE_TURN_CREDENTIAL ?? "");
+  return { urls, username: username || undefined, credential: credential || undefined };
 }
 
 /**

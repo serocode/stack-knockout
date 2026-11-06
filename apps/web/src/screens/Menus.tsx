@@ -302,9 +302,9 @@ export function SettingsScreen({ go }: { go: Go }) {
         {toggle("Reduce flashing", prefs.reduceFlashing, (reduceFlashing) => setPrefs({ reduceFlashing }), "softer line-clear flashes, no lightning")}
 
         <h3>Network (optional)</h3>
-        <p className="muted small">Only needed if friends can't connect (strict NAT / mobile carriers). Paste a managed TURN server's details.</p>
-        <label>TURN URL</label>
-        <input value={s.turnUrl} placeholder="turn:global.relay.metered.ca:80" onChange={(e) => set("turnUrl", e.target.value)} />
+        <p className="muted small">Only needed if friends can't connect (school/office Wi-Fi, strict NAT, mobile carriers). Paste a managed TURN server's details. Blank = the app's built-in server, if any.</p>
+        <label>TURN URLs (space-separated)</label>
+        <input value={s.turnUrl} placeholder="turn:global.relay.metered.ca:80 turns:global.relay.metered.ca:443?transport=tcp" onChange={(e) => set("turnUrl", e.target.value)} />
         <label>TURN username</label>
         <input value={s.turnUser} onChange={(e) => set("turnUser", e.target.value)} />
         <label>TURN credential</label>
