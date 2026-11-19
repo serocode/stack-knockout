@@ -3,11 +3,16 @@ import { Emitter, randomBytes, type Clock, type Mesh, type MeshMessage, type Tim
 import { ReplicatedLog, type LogExport } from "./log.js";
 import {
   DEFAULT_RULES,
+  MAX_PLAYERS,
   MIN_PLAYERS,
   findRoster,
   isLogEntry,
-  isMatchOptions,
+  isTeamId,
+  lineUpProblem,
+  normalizeOptions,
+  teamSize,
   type MatchOptions,
+  type TeamId,
   type Effect,
   type EntryBody,
   type LogEntry,
@@ -35,6 +40,8 @@ export interface CoordinatorConfig {
   resumeDelayMs: number;
   checkpointEvery: number;
   tickMs: number;
+  /** Pause on the results screen before the next round of a series starts by itself. */
+  intermissionMs: number;
 }
 
 export const DEFAULT_CONFIG: CoordinatorConfig = {
@@ -48,6 +55,7 @@ export const DEFAULT_CONFIG: CoordinatorConfig = {
   resumeDelayMs: 1500,
   checkpointEvery: 32,
   tickMs: 100,
+  intermissionMs: 15_000,
 };
 
 export type NodeMode = "joining" | "follower" | "host" | "leaderless" | "candidate" | "rejected" | "left";
@@ -62,7 +70,39 @@ export type CoordinatorEvent =
   | { kind: "peer"; playerId: string; up: boolean }
   | { kind: "suggestion"; suggestion: Suggestion }
   | { kind: "suggestion-taken"; player: string; coach: string }
-  | { kind: "callout"; from: string; code: string; about: string | null };
+  | { kind: "callout"; from: string; code: string; about: string | null }
+  | { kind: "chat"; message: ChatMessage };
+
+/**
+ * Room chat. Like callouts it is advisory and never enters the log: messages
+ * travel on the non-critical `viz` channel, each peer keeps its own recent
+ * history, and the host hands new members the last few public messages.
+ */
+export interface ChatMessage {
+  /** Local id (for rendering lists); not shared. */
+  id: number;
+  from: string;
+  /** Sender's name when the message was received. */
+  name: string;
+  text: string;
+  /** Sent to the sender's team only. */
+  team: boolean;
+  at: number;
+}
+
+export const CHAT_MAX_LEN = 200;
+const CHAT_KEEP = 120;
+const CHAT_HISTORY = 30;
+/** Per sender: at most this many messages per window. */
+const CHAT_BURST = 5;
+const CHAT_WINDOW_MS = 5000;
+
+export function cleanChat(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  // eslint-disable-next-line no-control-regex
+  const s = v.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim().slice(0, CHAT_MAX_LEN);
+  return s.length > 0 ? s : null;
+}
 
 /**
  * Coaching: a player who is out of the match (eliminated, or spectating a
@@ -220,6 +260,14 @@ export class Coordinator {
   private lastCalloutSent = -Infinity;
   /** Each peer's self-reported ping to the host, from heartbeats. */
   private readonly reportedRtt = new Map<string, { ms: number; at: number }>();
+  private chat: ChatMessage[] = [];
+  private chatSeq = 0;
+  private readonly chatTimes = new Map<string, number[]>();
+  private gotChatHistory = false;
+  /** Host: when the next round of the series starts by itself. */
+  private nextRoundAt: number | null = null;
+  /** When we saw the current match end (drives the intermission countdown on every peer). */
+  private endedAt: number | null = null;
 
   private readonly timer: number;
   private readonly unsub: (() => void)[] = [];
@@ -310,7 +358,16 @@ export class Coordinator {
       localSim: this.local?.sim ?? null,
       matchEndCommitted: this.isMatchEndCommitted(),
       joinWaitMs: this.mode === "joining" ? now - this.joinStartedAt : 0,
+      nextRoundInMs: this.nextRoundInMs(now),
     };
+  }
+
+  /** Time until the next round of the series starts by itself, or null if none is coming. */
+  private nextRoundInMs(now: number): number | null {
+    const st = this.log?.state;
+    if (!st || st.phase !== "ended" || !st.series || st.series.done) return null;
+    if (this.mode === "host" && this.nextRoundAt !== null) return Math.max(0, this.nextRoundAt - now);
+    return this.endedAt === null ? null : Math.max(0, this.endedAt + this.cfg.intermissionMs - now);
   }
 
   /** Garbage the host has ordered us to absorb that we have not inserted yet. */
@@ -340,10 +397,75 @@ export class Coordinator {
     this.intent({ k: "cosmetics", playerId: this.playerId, cosmetics }, { op: "cos", cos: cosmetics });
   }
 
-  /** Host only, lobby only: change the room's match options (bombs etc.). */
-  setOptions(options: MatchOptions): boolean {
-    if (this.mode !== "host" || this.log?.state.phase !== "lobby" || !isMatchOptions(options)) return false;
-    return this.hostAppend([{ k: "options", options: { ...options } }]).length === 1;
+  /** Host only, waiting room only: change the room's options (mode, rounds, bombs…). Fields left out keep their value. */
+  setOptions(patch: Partial<MatchOptions>): boolean {
+    const st = this.log?.state;
+    if (this.mode !== "host" || st?.phase !== "lobby") return false;
+    const options = normalizeOptions({ ...st.options, ...patch });
+    if (!options) return false;
+    return this.hostAppend([{ k: "options", options }]).length === 1;
+  }
+
+  /**
+   * Move a player to a team. Anyone can move themselves; the host can move
+   * anyone (bots included). Waiting room and results screen only.
+   */
+  setTeam(team: TeamId, pid: string = this.playerId): boolean {
+    const st = this.log?.state;
+    if (!st || !isTeamId(team) || (st.phase !== "lobby" && st.phase !== "ended")) return false;
+    const r = findRoster(st, pid);
+    if (!r || r.team === team || teamSize(st, team, pid) >= 5) return false;
+    if (pid !== this.playerId && this.mode !== "host") return false;
+    // Random teams: the draw decides, so only the host may adjust (e.g. after someone leaves).
+    if (st.options.teamPick !== "choose" && this.mode !== "host") return false;
+    this.intent({ k: "team", playerId: pid, team }, { op: "team", team });
+    return true;
+  }
+
+  /** Host: even out the teams, keeping as many players where they are as possible. */
+  balanceTeams(): boolean {
+    const st = this.log?.state;
+    if (this.mode !== "host" || !st || (st.phase !== "lobby" && st.phase !== "ended")) return false;
+    const one = st.roster.filter((r) => r.team === 1);
+    const two = st.roster.filter((r) => r.team === 2);
+    const moves: EntryBody[] = [];
+    // Move the most recently seated players off the bigger side.
+    const [big, to] = one.length > two.length ? ([one, 2] as const) : ([two, 1] as const);
+    const extra = Math.floor(Math.abs(one.length - two.length) / 2);
+    for (const r of [...big].sort((a, b) => b.seat - a.seat).slice(0, extra)) moves.push({ k: "team", playerId: r.playerId, team: to });
+    return moves.length > 0 && this.hostAppend(moves).length > 0;
+  }
+
+  /** Host: shuffle everyone into two random, even teams. */
+  shuffleTeams(): boolean {
+    const st = this.log?.state;
+    if (this.mode !== "host" || !st || (st.phase !== "lobby" && st.phase !== "ended")) return false;
+    const ids = st.roster.map((r) => r.playerId);
+    const rnd = randomBytes(ids.length);
+    const order = ids.map((id, i) => ({ id, k: rnd[i]! })).sort((a, b) => a.k - b.k).map((x) => x.id);
+    const want = new Map(order.map((id, i) => [id, (i % 2 === 0 ? 1 : 2) as TeamId]));
+    // Apply moves to the smaller side first so no team ever exceeds 5 midway.
+    const moves = st.roster.filter((r) => r.team !== want.get(r.playerId)!).map((r) => ({ pid: r.playerId, team: want.get(r.playerId)! }));
+    const bodies: EntryBody[] = [];
+    const counts = { 1: teamSize(st, 1), 2: teamSize(st, 2) };
+    const pending = [...moves];
+    while (pending.length) {
+      const i = pending.findIndex((m) => counts[m.team] < 5);
+      if (i < 0) break;
+      const m = pending.splice(i, 1)[0]!;
+      counts[m.team]++;
+      counts[m.team === 1 ? 2 : 1]--;
+      bodies.push({ k: "team", playerId: m.pid, team: m.team });
+    }
+    return bodies.length > 0 && this.hostAppend(bodies).length > 0;
+  }
+
+  /** Host: remove a player from the room. They can't rejoin it. */
+  kick(pid: string): boolean {
+    const st = this.log?.state;
+    if (this.mode !== "host" || !st || pid === this.playerId || !findRoster(st, pid) || !this.membershipChangeAllowed()) return false;
+    this.departed.delete(pid);
+    return this.hostAppend([{ k: "kick", playerId: pid }]).length === 1;
   }
 
   canStart(): { ok: boolean; reason?: string } {
@@ -354,7 +476,35 @@ export class Coordinator {
     if (players.length < MIN_PLAYERS) return { ok: false, reason: `Need at least ${MIN_PLAYERS} players` };
     if (players.some((r) => !r.connected)) return { ok: false, reason: "Waiting for a player to reconnect" };
     if (players.some((r) => r.playerId !== this.playerId && !r.ready)) return { ok: false, reason: "Waiting for everyone to ready up" };
+    const problem = lineUpProblem(st);
+    if (problem === "need-both-teams") return { ok: false, reason: "Both teams need at least one player" };
+    if (problem) return { ok: false, reason: problem };
     return { ok: true };
+  }
+
+  /** Can the host start the next round of the series now? */
+  canNextRound(): { ok: boolean; reason?: string } {
+    const st = this.log?.state;
+    if (this.mode !== "host" || !st) return { ok: false, reason: "Only the host can start" };
+    if (st.phase !== "ended" || !st.series || st.series.done) return { ok: false, reason: "No round to play" };
+    const problem = lineUpProblem(st, true);
+    if (problem === "need-both-teams") return { ok: false, reason: "Both teams need at least one connected player" };
+    if (problem === "not-enough-players") return { ok: false, reason: `Need at least ${MIN_PLAYERS} connected players` };
+    if (problem) return { ok: false, reason: problem };
+    return { ok: true };
+  }
+
+  /** Host: start the next round of the series now (it also starts by itself after the intermission). */
+  nextRound(): boolean {
+    if (!this.canNextRound().ok || !this.log) return false;
+    const seed = new DataView(randomBytes(4).buffer).getUint32(0);
+    const matchId = `m${this.log.state.matchCounter + 1}-${seed.toString(36)}`;
+    const ok = this.hostAppend([{ k: "next", matchId, seed }]).length === 1;
+    if (ok) {
+      this.goAt = this.clock.now() + this.cfg.countdownMs;
+      this.nextRoundAt = null;
+    }
+    return ok;
   }
 
   startMatch(): boolean {
@@ -366,9 +516,98 @@ export class Coordinator {
     return ok;
   }
 
+  /** Host: back to the waiting room (ends an unfinished series early). */
   rematch(): boolean {
     if (this.mode !== "host" || this.log?.state.phase !== "ended") return false;
     return this.hostAppend([{ k: "rematch" }]).length === 1;
+  }
+
+  // ============================================================ chat
+
+  chatMessages(): readonly ChatMessage[] {
+    return this.chat;
+  }
+
+  /** Team of a room member: their team in the current team match, else their waiting-room team. */
+  teamOf(pid: string): TeamId | null {
+    const st = this.log?.state;
+    if (!st) return null;
+    return st.match?.teams?.[pid] ?? findRoster(st, pid)?.team ?? null;
+  }
+
+  /** Is team chat available (the room plays teams)? */
+  teamChatAvailable(): boolean {
+    const st = this.log?.state;
+    return !!st && (st.options.teams || !!st.match?.teams);
+  }
+
+  /** Send a chat message to the room, or only to your team. Returns false if empty, throttled, or not in the room. */
+  sendChat(text: string, team = false): boolean {
+    const st = this.log?.state;
+    const me = st && findRoster(st, this.playerId);
+    const clean = cleanChat(text);
+    if (!st || !me || !clean || this.mode === "left" || this.mode === "rejected") return false;
+    const now = this.clock.now();
+    if (!this.chatAllowed(this.playerId, now)) return false;
+    const toTeam = team && this.teamChatAvailable();
+    const myTeam = this.teamOf(this.playerId);
+    const to = toTeam ? st.roster.filter((r) => r.playerId !== this.playerId && this.teamOf(r.playerId) === myTeam).map((r) => r.playerId) : undefined;
+    if (!to || to.length > 0) this.send("chat", { x: clean, tm: toTeam }, to, "viz");
+    this.pushChat({ from: this.playerId, name: me.name, text: clean, team: toTeam, at: now });
+    return true;
+  }
+
+  private chatAllowed(pid: string, now: number): boolean {
+    const times = (this.chatTimes.get(pid) ?? []).filter((t) => now - t < CHAT_WINDOW_MS);
+    if (times.length >= CHAT_BURST || now - (times.at(-1) ?? -Infinity) < 250) {
+      this.chatTimes.set(pid, times);
+      return false;
+    }
+    times.push(now);
+    this.chatTimes.set(pid, times);
+    return true;
+  }
+
+  private pushChat(m: Omit<ChatMessage, "id">, front = false): void {
+    const msg: ChatMessage = { ...m, id: ++this.chatSeq };
+    if (front) this.chat = [msg, ...this.chat];
+    else this.chat.push(msg);
+    if (this.chat.length > CHAT_KEEP) this.chat = this.chat.slice(-CHAT_KEEP);
+    this.events.emit("event", { kind: "chat", message: msg });
+    this.changed();
+  }
+
+  private onChat(from: string, p: Record<string, unknown>): void {
+    const st = this.log?.state;
+    const r = st && findRoster(st, from);
+    const text = cleanChat(p.x);
+    if (!st || !r || !text || !isBool(p.tm)) return void this.stats.invalid++;
+    // Team messages only count from teammates.
+    if (p.tm && this.teamOf(from) !== this.teamOf(this.playerId)) return;
+    if (!this.chatAllowed(from, this.clock.now())) return;
+    this.pushChat({ from, name: r.name, text, team: p.tm, at: this.clock.now() });
+  }
+
+  private sendChatHistory(to: string): void {
+    const now = this.clock.now();
+    const m = this.chat
+      .filter((c) => !c.team)
+      .slice(-CHAT_HISTORY)
+      .map((c) => ({ f: c.from, n: c.name, x: c.text, a: Math.max(0, Math.round(now - c.at)) }));
+    if (m.length) this.send("chat_hist", { m }, to);
+  }
+
+  private onChatHistory(from: string, p: Record<string, unknown>): void {
+    if (from !== this.hostId || this.gotChatHistory || !Array.isArray(p.m)) return;
+    this.gotChatHistory = true;
+    const now = this.clock.now();
+    const items = p.m.slice(-CHAT_HISTORY).filter((x): x is Record<string, unknown> => isObj(x));
+    for (const x of items.reverse()) {
+      const text = cleanChat(x.x);
+      const name = cleanName(x.n);
+      if (!isPid(x.f) || !text || !name || !isInt(x.a, 0, 86_400_000)) continue;
+      this.pushChat({ from: x.f, name, text, team: false, at: now - x.a }, true);
+    }
   }
 
   closeRoom(): void {
@@ -487,6 +726,8 @@ export class Coordinator {
     if (!st || !m || st.phase !== "playing" || coach === player) return false;
     if (!m.players[player]?.alive) return false;
     if (!findRoster(st, coach)) return false;
+    // In a team match you can only coach your own side.
+    if (m.teams && m.teams[player] !== this.teamOf(coach)) return false;
     return !m.players[coach]?.alive;
   }
 
@@ -635,6 +876,10 @@ export class Coordinator {
         return this.onSuggestionTaken(m.from, p);
       case "call":
         return this.onCallout(m.from, p);
+      case "chat":
+        return this.onChat(m.from, p);
+      case "chat_hist":
+        return this.onChatHistory(m.from, p);
       default:
         this.stats.invalid++;
     }
@@ -766,14 +1011,16 @@ export class Coordinator {
     if (!name) return void this.stats.invalid++;
     const st = this.log.state;
     if (st.closed) return this.send("join_rej", { reason: "closed" }, from);
+    if (st.kicked.includes(from)) return this.send("join_rej", { reason: "kicked" }, from);
     this.departed.delete(from);
     const existing = findRoster(st, from);
-    if (!existing && st.roster.length >= 6) return this.send("join_rej", { reason: "full" }, from);
+    if (!existing && st.roster.length >= MAX_PLAYERS) return this.send("join_rej", { reason: "full" }, from);
     if (!existing && !this.membershipChangeAllowed()) return; // joiner retries shortly
     const applied = this.hostAppend([{ k: "join", playerId: from, name, cosmetics }]);
     if (applied.length === 0) return this.send("join_rej", { reason: "full" }, from);
     this.disconnectedSince.delete(from);
     this.sendSync(from);
+    if (!existing) this.sendChatHistory(from);
   }
 
   // ============================================================ host
@@ -795,6 +1042,9 @@ export class Coordinator {
         return;
       case "cos":
         if (isCosmetics(p.cos)) this.hostAppend([{ k: "cosmetics", playerId: from, cosmetics: p.cos }]);
+        return;
+      case "team":
+        if (isTeamId(p.team)) this.hostAppend([{ k: "team", playerId: from, team: p.team }]);
         return;
       default:
         this.stats.invalid++;
@@ -1321,6 +1571,7 @@ export class Coordinator {
     for (const e of this.log?.entriesAfter(0) ?? []) if (e.k === "join" || e.k === "leave") this.lastMembershipSeq = e.seq;
     this.matchEndSeq = Infinity;
     if (!this.log || this.log.state.phase !== "ended") return;
+    this.endedAt ??= this.clock.now();
     const entries = this.log.entriesAfter(0);
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i]!;
@@ -1334,11 +1585,21 @@ export class Coordinator {
 
   private handleEffects(effects: Effect[], seq: number): void {
     for (const effect of effects) {
-      if (effect.kind === "match-end") this.matchEndSeq = seq;
+      if (effect.kind === "match-end") {
+        this.matchEndSeq = seq;
+        this.endedAt = this.clock.now();
+      }
+      if (effect.kind === "left" && effect.reason === "kicked" && effect.playerId === this.playerId) {
+        this.events.emit("event", { kind: "effect", effect, committed: false });
+        this.reject("kicked");
+        continue;
+      }
       if (effect.kind === "joined" || effect.kind === "left") this.lastMembershipSeq = Math.max(this.lastMembershipSeq, seq);
       if (effect.kind === "joined") this.departed.delete(effect.playerId);
       if (effect.kind === "lobby") this.matchEndSeq = Infinity;
       if (effect.kind === "match-start") {
+        this.endedAt = null;
+        this.nextRoundAt = null;
         this.local = null;
         this.placeSeq.clear();
         this.remotePieces.clear();
@@ -1418,6 +1679,11 @@ export class Coordinator {
         this.hostAppend([{ k: "leave", playerId: r.playerId, reason: "timeout" }]);
       }
     }
+    // Series: the next round starts by itself after the intermission.
+    if (st.phase === "ended" && st.series && !st.series.done && this.isMatchEndCommitted()) {
+      this.nextRoundAt ??= now + this.cfg.intermissionMs;
+      if (now >= this.nextRoundAt && !this.nextRound()) this.nextRoundAt = now + 2000; // e.g. waiting for players
+    } else if (st.phase !== "ended") this.nextRoundAt = null;
     if (st.phase === "countdown" && this.goAt !== null && now >= this.goAt) {
       this.goAt = null;
       this.clockBase = 0;

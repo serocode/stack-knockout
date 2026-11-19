@@ -45,6 +45,9 @@ const STAT_LABELS: [keyof ReturnType<typeof useProfile>["stats"], string][] = [
   ["perfectClears", "Perfect clears"],
   ["maxCombo", "Best combo"],
   ["attackSent", "Garbage sent"],
+  ["teamWins", "Team wins"],
+  ["seriesWins", "Series won"],
+  ["mvps", "MVP awards"],
 ];
 
 export function ProfileScreen({ go }: { go: (h: string) => void }) {

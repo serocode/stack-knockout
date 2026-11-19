@@ -1,6 +1,6 @@
 # Stack Knockout
 
-Six-player peer-to-peer falling-block knockout. React + TypeScript + Canvas, WebRTC
+Up-to-ten-player peer-to-peer falling-block knockout: free-for-all or teams (up to 5 v 5). React + TypeScript + Canvas, WebRTC
 mesh via Trystero, automatic host migration. No game server, no database.
 
 See **ARCHITECTURE.md** for the networking design, migration protocol,
@@ -21,11 +21,12 @@ Longer chaos run: `CHAOS_SEEDS=100 pnpm vitest run packages/coordinator/test/cha
 
 ## Play against the computer
 
-Menu → **Vs Computer**: pick 1–5 bots and a difficulty (Easy, Medium, Hard,
-Expert) and play a full knockout match offline. You host the room on an
-in-memory network in your tab and the bots join it as ordinary coordinators, so
-garbage, bombs, KOs, results and rematches all run the normal code path. You
-can add or remove bots and change the difficulty from the lobby between matches.
+Menu → **Vs Computer**: pick free-for-all or teams, 1–9 bots, a number of
+rounds and a difficulty (Easy, Medium, Hard, Expert), and play offline. You
+host the room on an in-memory network in your tab and the bots join it as
+ordinary coordinators, so teams, rounds, garbage, bombs, KOs, rankings and chat
+all run the normal code path. In the waiting room you can add or remove bots,
+move them between teams (⇄), change the difficulty, and mute their chatter.
 
 ## Try host migration without other devices
 
@@ -33,7 +34,7 @@ can add or remove bots and change the difficulty from the lobby between matches.
   one tab on a simulated network. Kill the host, cut its Wi-Fi, split the room
   3|3 or 2|4, heal, reopen closed tabs.
 * **Same-device room:** Create room → tick "Same device only" → share the link
-  into up to five more tabs of the same browser. Close the host's tab mid-match.
+  into up to nine more tabs of the same browser. Close the host's tab mid-match.
 
 ## Real multiplayer
 
@@ -52,6 +53,47 @@ Import the repository and leave **Root Directory** empty (the repo root).
 `vercel.json` runs `pnpm build`, which builds `apps/web` and copies the output
 to `dist`. Framework preset "Other" or "Vite" both work; leave the build and
 output overrides off. No environment variables or functions are needed.
+
+## Teams, rounds and rankings
+
+The host sets these in the waiting room:
+
+* **Mode:** free-for-all, or **teams** (▲ Red Team vs ■ Blue Team, up to 5 v 5; every team marker pairs the colour with its shape).
+  How teams are formed is up to the host:
+  * **Players choose:** players are balanced onto teams as they join; anyone can
+    switch to a team with a free slot, and the host can move players, even out or shuffle them.
+  * **🎲 Random:** even teams are drawn at random when the series starts and kept for every round.
+  * **🎲 Random every round:** new random teams before each round; the final ranking is by player.
+  You can't target or knock out a teammate, and you can only coach teammates.
+  A round ends when one team has nobody left standing.
+* **Rounds:** 1, 3, 5, 7 or 10. After every round you see that round's ranking
+  and the overall standings (with ▲▼ movement); the next round starts by itself
+  after 15 s, or when the host presses *Start now*. Players who joined mid-round
+  play from the next round. *End series* goes back to the waiting room early.
+* **Points per round:** free-for-all — 1 per player you outlast, +2 for the win,
+  +1 per KO. Teams — +3 if your team wins, +1 if you were still standing, +1 per KO.
+* **After the last round:** the champion (or winning team), a podium, the overall
+  ranking, a round-by-round grid, awards (MVP, Knockout king, Artillery, Line
+  machine, High roller, Survivor) and the achievements you unlocked during the series.
+
+## Room chat
+
+Everyone in a room can chat in the waiting room, on the results screens, and
+during a match (💬 bottom-left, or press **T**; your keys go back to the game
+when you leave the box). Room events (joins, round results) appear in the feed.
+In team rooms, toggle **All / Team** to talk to your team only. Late joiners get
+the last few public messages. Chat is rate-limited and never enters the game log.
+
+## Waiting rooms
+
+Menu → **Waiting rooms** lists public rooms. New rooms are listed by default
+(**List in Waiting rooms** on the Create screen; the host can switch it off any
+time under **List publicly** in the room settings). A listed room is announced
+every few seconds and answers right away when someone opens the list (online rooms over the Nostr relays, same-device rooms over a
+BroadcastChannel) and drops off the list within seconds of closing. Joining a
+room that's mid-game lets you watch and play from the next round. A listed room
+is joinable by anyone who sees it. The host can remove (✕) a player, who then
+can't rejoin that room.
 
 ## Bomb garbage
 

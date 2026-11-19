@@ -1,24 +1,26 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LogoMark } from "../ui/Logo";
 import { PingBadge } from "../ui/Ping";
-import { BOMB_FREQUENCIES, type BombFrequency, type Coordinator, type CoordinatorEvent, type MatchOptions, type MatchPlayer, type RoomState } from "@tk/coordinator";
-import { BOMB_BLASTS, MAX_BOMB_BONUS, VISIBLE_TOP, clearLinesWithBombs, pieceCells, type BombBlast, spawnPos, writePiece, type Placement, type PiecePos, type PlayerSim, type Rotation } from "@tk/engine";
-import { buildInviteUrl, formatSecret, type RoomCredentials } from "@tk/net";
+import { MAX_PLAYERS, teammates, wonResult, type Coordinator, type CoordinatorEvent, type MatchPlayer, type RoomState } from "@tk/coordinator";
+import { VISIBLE_TOP, clearLinesWithBombs, pieceCells, spawnPos, writePiece, type Placement, type PiecePos, type PlayerSim, type Rotation } from "@tk/engine";
+import type { RoomCredentials } from "@tk/net";
 import { audio } from "../audio/audio";
 import { CALLOUTS, bestSuggestion, calloutOf, coachColor, dropAt, reachable } from "../coach/coach";
-import { BLOCK_SKINS, EFFECTS, FRAMES, fromWire, labelOf, tierFromWire } from "../cosmetics/catalog";
-import { recordGame } from "../progress/profile";
-import { TierBadge } from "./Profile";
+import { fromWire } from "../cosmetics/catalog";
+import { onUnlock, type Achievement } from "../progress/profile";
 import { fx, tierFor } from "../fx/fx";
 import { isTouchDevice } from "../lib/device";
 import { getPrefs, usePrefs } from "../lib/prefs";
-import { openSession, type NetMode, type Session } from "../lib/session";
-import { CPU_LEVELS, MAX_CPU, type CpuLevel, type CpuOpponents } from "../lib/cpu";
+import { openSession, type CpuSetup, type NetMode, type Session } from "../lib/session";
+import { CPU_LEVELS } from "../lib/cpu";
+import { useAnnounceRoom } from "../lib/directory";
 import { useCoordinator } from "../lib/useCoordinator";
-import { drawBoard, lookOf, sizeCanvas } from "../render/draw";
-import { drawBlock } from "../render/skins";
+import { drawBoard, lookOf } from "../render/draw";
+import { ChatDock, TEAM_INFO, pushSystemLine } from "../ui/Chat";
 import { Customize } from "./Customize";
 import { Playfield, type PlayfieldHint } from "./Playfield";
+import { WaitingRoom, bombSummary } from "./RoomLobby";
+import { RoundResults, SeriesResults } from "./RoomResults";
 
 interface Notice {
   id: number;
@@ -37,7 +39,7 @@ interface Bubble {
 
 const boardEl = (pid: string) => document.querySelector<HTMLElement>(`[data-board="${CSS.escape(pid)}"]`);
 
-export function Room({ creds, mode, name: nameProp, create, cpu, go }: { creds: RoomCredentials; mode: NetMode; name: string; create: boolean; cpu?: { count: number; level: CpuLevel }; go: (h: string) => void }) {
+export function Room({ creds, mode, name: nameProp, create, cpu, listed = false, go }: { creds: RoomCredentials; mode: NetMode; name: string; create: boolean; cpu?: CpuSetup; listed?: boolean; go: (h: string) => void }) {
   // The name is fixed when the room opens: renaming in another tab must not tear down the session.
   const [name] = useState(nameProp);
   const [session, setSession] = useState<Session | null>(null);
@@ -52,7 +54,7 @@ export function Room({ creds, mode, name: nameProp, create, cpu, go }: { creds: 
   useEffect(() => {
     let s: Session | null = null;
     let cancelled = false;
-    openSession({ creds, mode, name, create, cpu: cpuStart })
+    openSession({ creds, mode, name, create, cpu: cpuStart, listed })
       .then((sess) => {
         if (cancelled) return sess.close();
         s = sess;
@@ -63,16 +65,30 @@ export function Room({ creds, mode, name: nameProp, create, cpu, go }: { creds: 
       cancelled = true;
       s?.close();
     };
-  }, [creds, mode, name, create, cpuStart]);
+  }, [creds, mode, name, create, cpuStart, listed]);
 
   const coord = session?.coord ?? null;
   const v = useCoordinator(coord);
   const st = v?.state ?? null;
-  const nameOf = (pid: string | null | undefined) => (pid && st?.roster.find((r) => r.playerId === pid)?.name) || "a player";
+  // Remember names so "X left" still reads right after X is gone from the roster.
+  const seenNames = useRef(new Map<string, string>());
+  for (const r of st?.roster ?? []) seenNames.current.set(r.playerId, r.name);
+  const nameOf = (pid: string | null | undefined) => (pid && (st?.roster.find((r) => r.playerId === pid)?.name ?? seenNames.current.get(pid))) || "a player";
   const nameRef = useRef(nameOf);
   nameRef.current = nameOf;
   const stRef = useRef(st);
   stRef.current = st;
+  useAnnounceRoom(coord, session);
+
+  // Achievements unlocked while in this room, tagged with the series they happened in.
+  const [unlocks, setUnlocks] = useState<{ series: string | null; a: Achievement }[]>([]);
+  useEffect(
+    () =>
+      onUnlock((e) => {
+        if (e.kind === "achievement") setUnlocks((u) => [...u, { series: stRef.current?.series?.id ?? null, a: e.achievement }]);
+      }),
+    [],
+  );
 
   // Notifications + sound/visual feedback for room-wide events.
   useEffect(() => {
@@ -119,6 +135,7 @@ export function Room({ creds, mode, name: nameProp, create, cpu, go }: { creds: 
           break;
         case "host-changed":
           push(e.hostId === me ? "You are now the host" : `${nm(e.hostId)} is now the host`, "good");
+          pushSystemLine(coord, e.hostId === me ? "You are now the host" : `${nm(e.hostId)} is now the host`);
           break;
         case "match-abandoned":
           push("Couldn't recover the match — no result", "warn");
@@ -165,21 +182,39 @@ export function Room({ creds, mode, name: nameProp, create, cpu, go }: { creds: 
                 }
               }
               break;
-            case "match-start":
+            case "match-start": {
+              // Live state: the rendered one is still from before this entry applied.
+              const m = coord.state?.match;
+              const sr = coord.state?.series;
+              if (m && sr && sr.total > 1) pushSystemLine(coord, `— Round ${m.round} of ${sr.total} —`);
               break;
-            case "match-end":
-              if (f.result.winner === me) audio.play("win");
+            }
+            case "match-end": {
+              if (wonResult(f.result, me)) audio.play("win");
+              const r = f.result;
+              const who = r.reason === "no-contest" ? "no result" : r.winnerTeam ? `${TEAM_INFO[r.winnerTeam].name} wins` : r.winner ? `${nm(r.winner)} wins` : "nobody wins";
+              pushSystemLine(coord, `🏁 Round ${r.round}: ${who}`, wonResult(r, me) ? "good" : undefined);
               break;
+            }
+            case "series-end": {
+              const top = f.series.standings[0];
+              if (f.series.total > 1 && top) pushSystemLine(coord, `🏆 Series over — ${top.name} tops the table with ${top.points} pts`, "good");
+              break;
+            }
             case "presence":
               push(`${nm(f.playerId)} ${f.connected ? "reconnected" : "disconnected"}`, f.connected ? "good" : "warn");
               break;
             case "joined":
               push(`${nm(f.playerId)} joined`, "good");
+              pushSystemLine(coord, `${nm(f.playerId)} joined`);
               if (f.playerId !== me) audio.play("join");
               break;
-            case "left":
-              push(`${nm(f.playerId)} ${f.reason === "timeout" ? "timed out" : "left"}`);
+            case "left": {
+              const what = f.reason === "timeout" ? "timed out" : f.reason === "kicked" ? "was removed by the host" : "left";
+              push(`${nm(f.playerId)} ${what}`);
+              pushSystemLine(coord, `${nm(f.playerId)} ${what}`, "warn");
               break;
+            }
           }
           break;
         }
@@ -200,7 +235,15 @@ export function Room({ creds, mode, name: nameProp, create, cpu, go }: { creds: 
   if (v.mode === "rejected")
     return (
       <Panel title="Couldn't join">
-        <p className="muted">{v.rejectedReason === "full" ? "This room already has 6 players." : v.rejectedReason === "closed" ? "The host closed this room." : `Rejected: ${v.rejectedReason}`}</p>
+        <p className="muted">
+          {v.rejectedReason === "full"
+            ? `This room already has ${MAX_PLAYERS} players.`
+            : v.rejectedReason === "closed"
+              ? "The host closed this room."
+              : v.rejectedReason === "kicked"
+                ? "The host removed you from this room."
+                : `Rejected: ${v.rejectedReason}`}
+        </p>
         <button onClick={() => go("#/")}>Back to menu</button>
       </Panel>
     );
@@ -233,9 +276,12 @@ export function Room({ creds, mode, name: nameProp, create, cpu, go }: { creds: 
       </div>
       {v.migrating && st.phase !== "lobby" && <div className="banner warn">Host migration in progress — gameplay paused</div>}
       {v.migrating && st.phase === "lobby" && <div className="banner warn">Host unreachable — waiting for a majority of the room to reconnect</div>}
-      {st.phase === "lobby" && <Lobby coord={coord} st={st} creds={creds} mode={mode} cpu={session.cpu} onCustomize={() => setCustomizing(true)} />}
+      {st.phase === "lobby" && <WaitingRoom coord={coord} st={st} creds={creds} mode={mode} cpu={session.cpu} onCustomize={() => setCustomizing(true)} />}
       {(st.phase === "countdown" || st.phase === "playing") && <Match coord={coord} st={st} />}
-      {st.phase === "ended" && <Results coord={coord} st={st} />}
+      {st.phase === "ended" && st.series && !st.series.done && <RoundResults coord={coord} st={st} />}
+      {st.phase === "ended" && st.series?.done && (
+        <SeriesResults coord={coord} st={st} unlocks={dedupe(unlocks.filter((u) => u.series === st.series!.id).map((u) => u.a))} />
+      )}
       {customizing && <Customize embedded onClose={() => setCustomizing(false)} />}
       {(st.phase === "countdown" || st.phase === "playing") &&
         bubbles.map((b) => (
@@ -245,6 +291,10 @@ export function Room({ creds, mode, name: nameProp, create, cpu, go }: { creds: 
         ))}
     </div>
   );
+}
+
+function dedupe(list: Achievement[]): Achievement[] {
+  return [...new Map(list.map((a) => [a.id, a])).values()];
 }
 
 function rectOf(el: Element) {
@@ -276,12 +326,16 @@ function TopBar({ coord, st, session, go, onCustomize }: { coord: Coordinator; s
           <div className="chip hide-sm">{session.mode === "online" ? "WebRTC" : "Same device"}</div>
         </>
       )}
+      {st.series && !st.series.done && st.series.total > 1 && st.phase !== "lobby" && (
+        <div className="chip good">Round {Math.min(st.series.total, st.match?.round ?? st.series.played)}/{st.series.total}</div>
+      )}
+      {st.options.teams && <div className="chip hide-sm">Teams</div>}
       <div className="chip hide-sm" title="Host epoch / log position">e{v.epoch} · #{v.lastSeq}{v.commit < v.lastSeq ? ` (${v.commit})` : ""}</div>
       <div className="grow" />
       <div className="chip ping-chip">
         <PingBadge coord={coord} pid={coord.playerId} hostId={v.isHost ? coord.playerId : v.hostId} label />
       </div>
-      <div className="chip">{st.roster.length}/6</div>
+      <div className="chip">{st.roster.length}/{MAX_PLAYERS}</div>
       <button className="ghost small" onClick={onCustomize} aria-label="Customize">🎨</button>
       <button
         className="ghost small"
@@ -297,215 +351,6 @@ function TopBar({ coord, st, session, go, onCustomize }: { coord: Coordinator; s
   );
 }
 
-function Lobby({ coord, st, creds, mode, cpu, onCustomize }: { coord: Coordinator; st: RoomState; creds: RoomCredentials; mode: NetMode; cpu?: CpuOpponents; onCustomize: () => void }) {
-  const v = coord.view();
-  const me = st.roster.find((r) => r.playerId === coord.playerId);
-  const link = useMemo(() => {
-    const base = buildInviteUrl(location.origin + location.pathname.replace(/\/$/, ""), creds);
-    return mode === "local" ? base.replace("#/join?", "#/join?m=local&") : base;
-  }, [creds, mode]);
-  const [copied, setCopied] = useState(false);
-  const can = coord.canStart();
-  return (
-    <div className="lobby">
-      <section className="panel">
-        <div className="row between">
-          <h2>Lobby</h2>
-          <button className="ghost small" onClick={onCustomize}>Customize</button>
-        </div>
-        <ul className="roster">
-          {st.roster.map((r) => {
-            const c = fromWire(r.cosmetics);
-            return (
-              <li key={r.playerId} className={r.connected ? "" : "off"}>
-                <span className="avatar">{c.avatar}</span>
-                <span className="name">
-                  <span className={`dot ${r.connected ? "on" : ""}`} />
-                  {r.name}
-                  <TierBadge tier={tierFromWire(r.cosmetics)} small />
-                  {r.playerId === coord.playerId && <em> (you)</em>}
-                  {cpu?.isBot(r.playerId) && <span className="badge">CPU</span>}
-                  <span className="looks">
-                    {labelOf(BLOCK_SKINS, c.block)} · {labelOf(FRAMES, c.frame)} · {labelOf(EFFECTS, c.effect)}
-                  </span>
-                </span>
-                <MiniSkin wire={r.cosmetics} />
-                {r.connected && r.playerId !== v.hostId && <PingBadge coord={coord} pid={r.playerId} hostId={v.hostId} />}
-                {r.playerId === v.hostId && <span className="badge host">HOST</span>}
-                {r.role === "spectator" && <span className="badge">SPECTATING</span>}
-                {r.playerId !== v.hostId && <span className={`badge ${r.ready ? "ready" : ""}`}>{r.ready ? "READY" : "not ready"}</span>}
-              </li>
-            );
-          })}
-          {Array.from({ length: Math.max(0, 6 - st.roster.length) }, (_, i) => (
-            <li key={`empty${i}`} className="empty">
-              <span className="avatar">·</span>
-              <span className="name muted">Open slot</span>
-            </li>
-          ))}
-        </ul>
-        <MatchRules coord={coord} options={st.options} editable={v.isHost} />
-        <div className="row">
-          {!v.isHost && me && (
-            <button className={me.ready ? "ghost" : ""} onClick={() => coord.setReady(!me.ready)}>
-              {me.ready ? "Not ready" : "Ready"}
-            </button>
-          )}
-          {v.isHost && (
-            <button disabled={!can.ok} onClick={() => coord.startMatch()} title={can.reason}>
-              Start match
-            </button>
-          )}
-          {v.isHost && !can.ok && <span className="muted small">{can.reason}</span>}
-        </div>
-      </section>
-      {cpu ? (
-        <CpuPanel cpu={cpu} />
-      ) : (
-      <section className="panel invite">
-        <h3>Invite friends</h3>
-        <label>Room code</label>
-        <div className="big mono">{creds.roomCode}</div>
-        <label>Invite key</label>
-        <div className="big mono">{formatSecret(creds.secret)}</div>
-        <p className="muted small">The code alone can't get anyone in — they need the key too. The link carries both in the part after #, which never reaches any server.</p>
-        <div className="row">
-          <button
-            onClick={async () => {
-              const flash = () => {
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
-              };
-              try {
-                if (navigator.share) return void (await navigator.share({ title: "Stack Knockout", url: link }));
-                if (navigator.clipboard) {
-                  await navigator.clipboard.writeText(link);
-                  return flash();
-                }
-              } catch {
-                /* dismissed or blocked: fall through */
-              }
-              // Insecure pages (http://192.168…) have no share/clipboard API.
-              const ta = document.createElement("textarea");
-              ta.value = link;
-              ta.style.position = "fixed";
-              ta.style.opacity = "0";
-              document.body.appendChild(ta);
-              ta.select();
-              const ok = document.execCommand("copy");
-              ta.remove();
-              if (ok) flash();
-              else window.prompt("Copy this invite link:", link);
-            }}
-          >
-            {copied ? "Copied!" : "Share invite link"}
-          </button>
-        </div>
-      </section>
-      )}
-    </div>
-  );
-}
-
-/** Lobby panel for computer opponents: how many, and how tough. */
-function CpuPanel({ cpu }: { cpu: CpuOpponents }) {
-  const [, bump] = useState(0);
-  const refresh = () => bump((x) => x + 1);
-  return (
-    <section className="panel invite">
-      <h3>Computer opponents</h3>
-      <label>Opponents</label>
-      <div className="row">
-        <button className="small ghost" disabled={cpu.count <= 1} onClick={() => { cpu.remove(); refresh(); }} aria-label="Remove an opponent">−</button>
-        <div className="big mono">{cpu.count}</div>
-        <button className="small ghost" disabled={cpu.count >= MAX_CPU} onClick={() => { cpu.add(); refresh(); }} aria-label="Add an opponent">+</button>
-      </div>
-      <label>Difficulty</label>
-      <div className="seg">
-        {(Object.keys(CPU_LEVELS) as CpuLevel[]).map((l) => (
-          <button key={l} className={`small ${cpu.level === l ? "on" : "ghost"}`} onClick={() => { cpu.setLevel(l); refresh(); }}>
-            {CPU_LEVELS[l].label}
-          </button>
-        ))}
-      </div>
-      <p className="muted small">Bots play right here in your browser — no internet needed. Difficulty sets how fast and how cleanly they stack; you can change it between matches.</p>
-    </section>
-  );
-}
-
-const BOMB_FREQ_LABEL: Record<BombFrequency, string> = { off: "Off", sparse: "One per batch", half: "Every other row", every: "Every row" };
-const BLAST_LABEL: Record<BombBlast, { label: string; hint: string }> = {
-  line: { label: "Line", hint: "Also clears the row beneath it" },
-  area: { label: "Area", hint: "Destroys the 8 cells around it" },
-  column: { label: "Column", hint: "Destroys everything below it" },
-};
-
-/** One-line summary of the room's bomb rules, e.g. "💣 Every row · Line · +1". */
-export function bombSummary(o: MatchOptions): string | null {
-  if (o.bombs === "off") return null;
-  return `💣 ${BOMB_FREQ_LABEL[o.bombs]} · ${BLAST_LABEL[o.blast].label} blast${o.bombBonus ? ` · +${o.bombBonus} attack` : ""}`;
-}
-
-/** Host-set room rules. Everyone sees them; only the host can change them (lobby only). */
-function MatchRules({ coord, options, editable }: { coord: Coordinator; options: MatchOptions; editable: boolean }) {
-  const set = (patch: Partial<MatchOptions>) => coord.setOptions({ ...options, ...patch });
-  const on = options.bombs !== "off";
-  return (
-    <div className="match-rules">
-      <h3>Bomb garbage</h3>
-      <p className="muted small">
-        Some garbage rows carry a bomb. Clear a bomb's row and it blows up{on ? `: ${BLAST_LABEL[options.blast].hint.toLowerCase()}` : ""}. Bombs caught in a blast go off too.
-        {!editable && " Only the host can change these."}
-      </p>
-      <label>Bombs</label>
-      <div className="seg">
-        {BOMB_FREQUENCIES.map((f) => (
-          <button key={f} className={`small ${options.bombs === f ? "on" : "ghost"}`} disabled={!editable} onClick={() => set({ bombs: f })}>
-            {BOMB_FREQ_LABEL[f]}
-          </button>
-        ))}
-      </div>
-      {on && (
-        <>
-          <label>Blast</label>
-          <div className="seg">
-            {BOMB_BLASTS.map((b) => (
-              <button key={b} className={`small ${options.blast === b ? "on" : "ghost"}`} disabled={!editable} title={BLAST_LABEL[b].hint} onClick={() => set({ blast: b })}>
-                {BLAST_LABEL[b].label}
-              </button>
-            ))}
-          </div>
-          <label>Bonus attack per bomb</label>
-          <div className="seg">
-            {Array.from({ length: MAX_BOMB_BONUS + 1 }, (_, n) => (
-              <button key={n} className={`small ${options.bombBonus === n ? "on" : "ghost"}`} disabled={!editable} onClick={() => set({ bombBonus: n })}>
-                {n === 0 ? "None" : `+${n}`}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/** Four blocks in a player's chosen skin and colours. */
-function MiniSkin({ wire }: { wire: Record<string, string> }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  const key = JSON.stringify(wire);
-  useEffect(() => {
-    if (!ref.current) return;
-    const look = lookOf(fromWire(wire));
-    const s = 14;
-    const values = [3, 1, 5, 8];
-    const ctx = sizeCanvas(ref.current, values.length, 1, s);
-    ctx.clearRect(0, 0, values.length * s, s);
-    values.forEach((v, i) => drawBlock(ctx, i * s, 0, s, v, look, 0, i, 0));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  return <canvas ref={ref} className="mini-skin" aria-hidden />;
-}
-
 // ===================================================================== match
 
 /** Who a player's next attack goes to, as far as we can tell. */
@@ -519,7 +364,7 @@ function effectiveTarget(st: RoomState, pid: string): string | null {
   return alive(mp.lastTarget) ? mp.lastTarget : null;
 }
 
-function OpponentBoard({ coord, st, pid, size, targeted, onTarget, showHints = false, coached = false }: { coord: Coordinator; st: RoomState; pid: string; size: number; targeted: boolean; onTarget?: () => void; showHints?: boolean; coached?: boolean }) {
+function OpponentBoard({ coord, st, pid, size, targeted, onTarget, showHints = false, coached = false, ally = false }: { coord: Coordinator; st: RoomState; pid: string; size: number; targeted: boolean; onTarget?: () => void; showHints?: boolean; coached?: boolean; ally?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const mp = st.match!.players[pid]!;
   const r = st.roster.find((x) => x.playerId === pid);
@@ -556,12 +401,13 @@ function OpponentBoard({ coord, st, pid, size, targeted, onTarget, showHints = f
 
   const queued = mp.incoming.reduce((a, g) => a + g.lines, 0);
   const landing = mp.commanded.reduce((a, g) => a + g.lines, 0);
+  const team = st.match!.teams?.[pid];
   return (
     <button
-      className={`opp ${targeted ? "targeted" : ""} ${coached ? "coached" : ""} ${mp.alive ? "" : "out"}`}
+      className={`opp ${targeted ? "targeted" : ""} ${coached ? "coached" : ""} ${mp.alive ? "" : "out"} ${ally ? "ally" : ""}`}
       onClick={onTarget}
       disabled={!mp.alive || !onTarget}
-      aria-label={`${r?.name ?? "Player"}${targeted ? " (your target)" : ""}${coached ? " (coaching)" : ""}`}
+      aria-label={`${r?.name ?? "Player"}${team ? ` (${TEAM_INFO[team].name}${ally ? ", your team" : ""})` : ""}${targeted ? " (your target)" : ""}${coached ? " (coaching)" : ""}`}
     >
       <div className={`opp-well frame frame-${cos.frame}`} data-board={pid}>
         <canvas ref={ref} />
@@ -607,24 +453,50 @@ function Rankings({ coord, st }: { coord: Coordinator; st: RoomState }) {
     .sort((a, b) => (a.p.alive !== b.p.alive ? (a.p.alive ? -1 : 1) : a.p.alive ? b.p.kos - a.p.kos || b.p.attackSent - a.p.attackSent : (a.p.placement ?? 9) - (b.p.placement ?? 9)));
   const myTarget = effectiveTarget(st, coord.playerId);
   const attackingMe = new Set(m.participants.filter((p) => effectiveTarget(st, p) === coord.playerId));
+  const teams = m.teams;
+  const row = ({ pid, p }: (typeof rows)[number]) => {
+    const r = st.roster.find((x) => x.playerId === pid);
+    const c = fromWire(r?.cosmetics);
+    return (
+      <li key={pid} className={`${pid === coord.playerId ? "me" : ""} ${p.alive ? "" : "out"}`}>
+        <span className="rank">{p.alive ? "•" : `#${p.placement}`}</span>
+        <span className="avatar">{c.avatar}</span>
+        <span className="name">{r?.name ?? "(left)"}</span>
+        {pid === myTarget && <span className="tag-target" title="Your target">◎</span>}
+        {attackingMe.has(pid) && <span className="tag-threat" title="Targeting you">⚠</span>}
+        {p.alive && r?.connected && <PingBadge coord={coord} pid={pid} hostId={coord.view().hostId} />}
+        <span className="ko">{p.kos} KO</span>
+      </li>
+    );
+  };
+  if (!teams) {
+    return (
+      <ol className="rankings" aria-label="Rankings">
+        {rows.map(row)}
+      </ol>
+    );
+  }
+  // Team match: one block per team, your team first, each with how many are still standing.
+  const mine = teams[coord.playerId];
+  const order = mine === 2 ? ([2, 1] as const) : ([1, 2] as const);
   return (
-    <ol className="rankings" aria-label="Rankings">
-      {rows.map(({ pid, p }) => {
-        const r = st.roster.find((x) => x.playerId === pid);
-        const c = fromWire(r?.cosmetics);
+    <div className="team-rankings" aria-label="Rankings by team">
+      {order.map((t) => {
+        const members = rows.filter((x) => teams[x.pid] === t);
+        const left = members.filter((x) => x.p.alive).length;
         return (
-          <li key={pid} className={`${pid === coord.playerId ? "me" : ""} ${p.alive ? "" : "out"}`}>
-            <span className="rank">{p.alive ? "•" : `#${p.placement}`}</span>
-            <span className="avatar">{c.avatar}</span>
-            <span className="name">{r?.name ?? "(left)"}</span>
-            {pid === myTarget && <span className="tag-target" title="Your target">◎</span>}
-            {attackingMe.has(pid) && <span className="tag-threat" title="Targeting you">⚠</span>}
-            {p.alive && r?.connected && <PingBadge coord={coord} pid={pid} hostId={coord.view().hostId} />}
-            <span className="ko">{p.kos} KO</span>
-          </li>
+          <section key={t} className={`team-block ${left === 0 ? "wiped" : ""}`}>
+            <header>
+              <span className="team-plain">{t === mine ? "Your team" : "Opponents"}</span>
+              <span className="team-left">
+                <b>{left}</b>/{members.length} left
+              </span>
+            </header>
+            <ol className="rankings">{members.map(row)}</ol>
+          </section>
         );
       })}
-    </ol>
+    </div>
   );
 }
 
@@ -656,7 +528,11 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
   const m = st.match!;
   const me = coord.playerId;
   const meMp: MatchPlayer | undefined = m.players[me];
-  const opponents = m.participants.filter((p) => p !== me);
+  const others = m.participants.filter((p) => p !== me);
+  const allies = others.filter((p) => teammates(m, me, p));
+  const foes = others.filter((p) => !allies.includes(p));
+  // Opponents first; your team after them (narrow strip) or in its own group.
+  const opponents = [...foes, ...allies];
   const elapsed = m.elapsedMs / 1000;
   const gravityMs = Math.max(90, 1000 * Math.pow(0.9, elapsed / 15));
   const countdown = useCountdown(st);
@@ -674,7 +550,8 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
   const byHeight = Math.floor((viewport.h - reservedH) / 20);
   const byWidth = Math.floor((viewport.w - (narrow ? 130 : 520)) / 10);
   const cell = Math.max(14, Math.min(32, byHeight, byWidth));
-  const oppSize = narrow ? Math.max(4, Math.min(6, Math.floor((viewport.w - 24) / (opponents.length * 11)))) : opponents.length > 3 ? 9 : 11;
+  const many = opponents.length > 6;
+  const oppSize = narrow ? Math.max(many ? 3 : 4, Math.min(6, Math.floor((viewport.w - 24) / (opponents.length * 11)))) : many ? 7 : opponents.length > 3 ? 9 : 11;
 
   const overlay = v.abandoned
     ? "No result"
@@ -714,6 +591,13 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
 
   const bombTag = bombSummary(m.options);
   const clock = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, "0")}`;
+  const sr = st.series;
+  const roundTag = sr && sr.total > 1 ? `Round ${m.round}/${sr.total}` : null;
+  const myTeam = m.teams?.[me];
+  const board = (pid: string) => {
+    const ally = allies.includes(pid);
+    return <OpponentBoard key={pid} coord={coord} st={st} pid={pid} size={oppSize} ally={ally} targeted={pid === myTarget} onTarget={ally ? undefined : () => coord.setTarget("manual", pid)} />;
+  };
   const targetBar = meMp && meMp.alive && (
     <div className="targeting">
       <span className="muted small">Target</span>
@@ -728,20 +612,28 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
   );
 
   if (spectating) {
+    // Team matches show two columns side by side (one on phones), so each gets half the width.
+    const perTeam = m.teams ? Math.max(...([1, 2] as const).map((t) => m.participants.filter((p) => m.teams![p] === t).length)) : 0;
+    const colW = m.teams && viewport.w >= 760 ? viewport.w / 2 - 70 : viewport.w - 60;
     const size = coaching
       ? Math.max(6, Math.min(10, Math.floor((viewport.w - 60) / (Math.min(5, m.participants.length) * 12))))
-      : Math.max(8, Math.min(16, Math.floor((viewport.w - 60) / (Math.min(3, m.participants.length) * 12))));
+      : m.teams
+        ? Math.max(6, Math.min(12, Math.floor(colW / (Math.min(3, perTeam) * 13))))
+        : Math.max(8, Math.min(16, Math.floor((viewport.w - 60) / (Math.min(3, m.participants.length) * 12))));
     const canCoachAny = st.phase === "playing" && m.participants.some((p) => coord.canCoach(p));
     return (
       <div className="match spectate">
         <div className="spectate-head">
           <h3>{meMp ? `You placed #${meMp.placement} — spectating` : "Spectating — you'll play next round"}</h3>
-          <span className="muted small">{alive} alive · {clock}{bombTag ? ` · ${bombTag}` : ""}</span>
-          {canCoachAny && !coaching && <p className="coach-prompt">💡 Tap a board to coach that player — suggest where to drop their piece</p>}
+          <span className="muted small">{roundTag ? `${roundTag} · ` : ""}{alive} alive · {clock}{bombTag ? ` · ${bombTag}` : ""}</span>
+          {canCoachAny && !coaching && (
+            <p className="coach-prompt">💡 Tap a {m.teams ? "teammate's" : ""} board to coach that player — suggest where to drop their piece</p>
+          )}
         </div>
         {coaching && <CoachPanel key={coaching} coord={coord} st={st} pid={coaching} viewport={viewport} onClose={() => setCoachPick(null)} />}
-        <div className="spectate-grid">
-          {m.participants.map((pid) => (
+        {(() => {
+          const viewTeam = coord.teamOf(me);
+          const spectBoard = (pid: string) => (
             <OpponentBoard
               key={pid}
               coord={coord}
@@ -750,13 +642,28 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
               size={size}
               targeted={false}
               coached={pid === coaching}
+              ally={!!m.teams && m.teams[pid] === viewTeam}
               showHints
               onTarget={coord.canCoach(pid) ? () => setCoachPick(pid === coaching ? null : pid) : undefined}
             />
-          ))}
-        </div>
+          );
+          if (!m.teams) return <div className="spectate-grid">{m.participants.map(spectBoard)}</div>;
+          // Team match: each team in its own column, yours first.
+          const order = viewTeam === 2 ? ([2, 1] as const) : ([1, 2] as const);
+          return (
+            <div className="spectate-teams">
+              {order.map((t) => (
+                <section key={t} className="opp-group">
+                  <div className="opp-group-label">{viewTeam ? (t === viewTeam ? "Your team" : "Opponents") : TEAM_INFO[t].name}</div>
+                  <div className="spectate-grid">{m.participants.filter((p) => m.teams![p] === t).map(spectBoard)}</div>
+                </section>
+              ))}
+            </div>
+          );
+        })()}
         <CalloutBar coord={coord} st={st} />
         <Rankings coord={coord} st={st} />
+        <ChatDock coord={coord} st={st} />
       </div>
     );
   }
@@ -765,6 +672,7 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
     <div className={`match ${narrow ? "narrow" : ""}`}>
       {!narrow && (
         <aside className="match-side">
+          {roundTag && <div className="chip good">{roundTag}</div>}
           <div className="muted small">{alive} alive · {clock}</div>
           {bombTag && <div className="chip warn bomb-tag">{bombTag}</div>}
           <Rankings coord={coord} st={st} />
@@ -772,9 +680,9 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
       )}
       {narrow && (
         <div className="opp-strip">
-          {opponents.map((pid) => (
-            <OpponentBoard key={pid} coord={coord} st={st} pid={pid} size={oppSize} targeted={pid === myTarget} onTarget={() => coord.setTarget("manual", pid)} />
-          ))}
+          {foes.map(board)}
+          {allies.length > 0 && <span className="strip-divider" aria-label="Your team" />}
+          {allies.map(board)}
         </div>
       )}
       <div className="mine">
@@ -794,19 +702,36 @@ function Match({ coord, st }: { coord: Coordinator; st: RoomState }) {
           onHintUsed={(h) => coord.tookSuggestion(h.coach)}
         >
           {countdown && <div className={`countdown ${countdown === "GO!" ? "go" : ""}`} key={countdown}>{countdown}</div>}
+          {myTeam && st.phase === "countdown" && (
+            <div className="team-callout">
+              Team match — {allies.length ? `you + ${allies.length} vs ${foes.length}` : `you vs ${foes.length}`}
+            </div>
+          )}
         </Playfield>
         {targetBar}
         <CalloutBar coord={coord} st={st} />
       </div>
       {!narrow && (
         <div className="opponents">
-          <div className="opp-grid">
-            {opponents.map((pid) => (
-              <OpponentBoard key={pid} coord={coord} st={st} pid={pid} size={oppSize} targeted={pid === myTarget} onTarget={() => coord.setTarget("manual", pid)} />
-            ))}
-          </div>
+          {myTeam ? (
+            <>
+              <div className="opp-group">
+                <div className="opp-group-label">Opponents</div>
+                <div className="opp-grid">{foes.map(board)}</div>
+              </div>
+              {allies.length > 0 && (
+                <div className="opp-group">
+                  <div className="opp-group-label">Your team</div>
+                  <div className="opp-grid">{allies.map(board)}</div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="opp-grid">{foes.map(board)}</div>
+          )}
         </div>
       )}
+      <ChatDock coord={coord} st={st} />
     </div>
   );
 }
@@ -1062,57 +987,5 @@ function CoachPanel({ coord, st, pid, viewport, onClose }: { coord: Coordinator;
         </div>
       </div>
     </section>
-  );
-}
-
-function Results({ coord, st }: { coord: Coordinator; st: RoomState }) {
-  const v = coord.view();
-  const res = st.lastResult;
-  const who = (pid: string) => st.roster.find((r) => r.playerId === pid);
-  const won = res?.winner === coord.playerId;
-  // Count this match toward career score / stats once the result is confirmed.
-  useEffect(() => {
-    if (!res || !(v.matchEndCommitted || res.reason === "no-contest")) return;
-    const mine = res.rankings.find((r) => r.playerId === coord.playerId);
-    if (!mine) return;
-    recordGame({
-      id: res.matchId,
-      score: mine.score,
-      kos: mine.kos,
-      attackSent: mine.attackSent,
-      won: res.reason === "knockout" && res.winner === coord.playerId,
-      players: res.rankings.length,
-    });
-  }, [res, v.matchEndCommitted, coord]);
-  return (
-    <div className="center">
-      <div className={`panel results ${won ? "won" : ""}`}>
-        <h2>{res?.reason === "no-contest" ? "No result" : won ? "Victory!" : `${res?.winner ? who(res.winner)?.name ?? "Someone" : "Nobody"} wins`}</h2>
-        {!v.matchEndCommitted && <p className="muted small">Confirming result with the room…</p>}
-        <table>
-          <thead>
-            <tr><th>#</th><th>Player</th><th>KOs</th><th>Sent</th><th className="hide-sm">Lines</th><th>Score</th></tr>
-          </thead>
-          <tbody>
-            {res?.rankings.map((r) => {
-              const ro = who(r.playerId);
-              return (
-                <tr key={r.playerId} className={r.playerId === coord.playerId ? "me" : ""}>
-                  <td>{r.placement === 1 ? "🏆" : r.placement}</td>
-                  <td>{fromWire(ro?.cosmetics).avatar} {ro?.name ?? "(left)"}</td>
-                  <td>{r.kos}</td>
-                  <td>{r.attackSent}</td>
-                  <td className="hide-sm">{r.lines}</td>
-                  <td>{r.score.toLocaleString()}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div className="row">
-          {v.isHost ? <button onClick={() => coord.rematch()}>Rematch</button> : <span className="muted">Waiting for the host to start a rematch…</span>}
-        </div>
-      </div>
-    </div>
   );
 }

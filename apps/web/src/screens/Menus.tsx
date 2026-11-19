@@ -12,6 +12,19 @@ import { saveName, savedName } from "../lib/identity";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "../lib/settings";
 import { Playfield } from "./Playfield";
 import { CPU_LEVELS, MAX_CPU, type CpuLevel } from "../lib/cpu";
+import { ROUND_CHOICES, TEAM_PICK_LABEL } from "./RoomLobby";
+import { TEAM_PICKS, type TeamPick } from "@tk/coordinator";
+import { KOFI_URL } from "../lib/links";
+
+/** Opens the developer's Ko-fi page in a new tab. A plain link: no third-party script is loaded. */
+export function KofiLink({ compact = false }: { compact?: boolean }) {
+  return (
+    <a className={`kofi-link ${compact ? "compact" : ""}`} href={KOFI_URL} target="_blank" rel="noopener noreferrer">
+      <span aria-hidden>☕</span>
+      <span>{compact ? "Support on Ko-fi" : "Enjoying the game? Buy me a coffee on Ko-fi"}</span>
+    </a>
+  );
+}
 
 type Go = (h: string) => void;
 
@@ -30,7 +43,7 @@ export function Menu({ go }: { go: Go }) {
     <div className="page menu-page">
       <div className="hero">
         <Logo />
-        <p className="tagline">Six friends. One board each. Last stack standing wins.</p>
+        <p className="tagline">Up to ten players. Free-for-all or 5 v 5. Last stack standing wins.</p>
         <button className="profile-card" onClick={() => go("#/profile")}>
           <span className="avatar lg">{prefs.cosmetics.avatar}</span>
           <span className="profile-card-body">
@@ -45,15 +58,19 @@ export function Menu({ go }: { go: Go }) {
         <div className="primary-actions">
           <button className="big-btn" onClick={() => go("#/create")}>
             <span className="big-btn-title">Create room</span>
-            <span className="big-btn-sub">Invite up to 5 friends</span>
+            <span className="big-btn-sub">Invite up to 9 friends</span>
           </button>
           <button className="big-btn alt" onClick={() => go("#/join")}>
             <span className="big-btn-title">Join room</span>
             <span className="big-btn-sub">Use a link or code</span>
           </button>
+          <button className="big-btn alt wide" onClick={() => go("#/rooms")}>
+            <span className="big-btn-title">🚪 Waiting rooms</span>
+            <span className="big-btn-sub">Browse public rooms and jump in</span>
+          </button>
           <button className="big-btn cpu wide" onClick={() => go("#/cpu")}>
             <span className="big-btn-title">🤖 Vs Computer</span>
-            <span className="big-btn-sub">Battle 1–5 bots, offline</span>
+            <span className="big-btn-sub">Battle up to {MAX_CPU} bots, free-for-all or teams</span>
           </button>
         </div>
         <div className="menu-tiles">
@@ -65,6 +82,7 @@ export function Menu({ go }: { go: Go }) {
             </button>
           ))}
         </div>
+        <KofiLink />
         <button className="link-btn" onClick={() => go("#/lab")}>Open the migration lab →</button>
       </div>
     </div>
@@ -83,6 +101,7 @@ function NameField({ value, onChange }: { value: string; onChange: (s: string) =
 export function Create({ go }: { go: Go }) {
   const [name, setName] = useState(savedName());
   const [local, setLocal] = useState(false);
+  const [listed, setListed] = useState(true);
   return (
     <div className="page">
       <div className="panel narrow">
@@ -92,13 +111,20 @@ export function Create({ go }: { go: Go }) {
           <input type="checkbox" checked={local} onChange={(e) => setLocal(e.target.checked)} />
           Same device only (tabs on this browser — for testing without internet)
         </label>
+        <label className="check">
+          <input type="checkbox" checked={listed} onChange={(e) => setListed(e.target.checked)} />
+          <span>
+            List in Waiting rooms
+            <span className="muted small"> — anyone browsing {local ? "on this device " : ""}can see and join. Untick for invite-only; you can change it later in the room.</span>
+          </span>
+        </label>
         <div className="row">
           <button
             disabled={!name.trim()}
             onClick={() => {
               saveName(name.trim());
               const c = createRoomCredentials();
-              go(`#/room?${new URLSearchParams({ r: c.roomCode, k: c.secret, e: String(c.expiresAt), m: local ? "local" : "online", new: "1" })}`);
+              go(`#/room?${new URLSearchParams({ r: c.roomCode, k: c.secret, e: String(c.expiresAt), m: local ? "local" : "online", new: "1", ...(listed ? { list: "1" } : {}) })}`);
             }}
           >
             Create
@@ -162,15 +188,53 @@ export function VsComputer({ go }: { go: Go }) {
   const [name, setName] = useState(savedName());
   const [count, setCount] = useState(1);
   const [level, setLevel] = useState<CpuLevel>("medium");
+  const [teams, setTeams] = useState(false);
+  const [pick, setPick] = useState<TeamPick>("choose");
+  const [rounds, setRounds] = useState(1);
+  // Teams are balanced as everyone joins: you take one slot, the bots fill the rest.
+  const mates = Math.floor(count / 2);
+  const total = count + 1;
+  const split = !teams
+    ? null
+    : pick === "choose"
+      ? `You + ${mates} bot${mates === 1 ? "" : "s"} vs ${count - mates}`
+      : `${Math.ceil(total / 2)} v ${Math.floor(total / 2)}`;
   return (
     <div className="page">
       <div className="panel narrow">
         <h2>Vs Computer</h2>
         <NameField value={name} onChange={setName} />
-        <label>Opponents</label>
+        <label>Mode</label>
+        <div className="seg">
+          <button className={`small ${!teams ? "on" : "ghost"}`} onClick={() => setTeams(false)}>Free-for-all</button>
+          <button className={`small ${teams ? "on" : "ghost"}`} onClick={() => setTeams(true)}>Teams</button>
+        </div>
+        <label>Bots</label>
         <div className="seg">
           {Array.from({ length: MAX_CPU }, (_, i) => i + 1).map((n) => (
             <button key={n} className={`small ${count === n ? "on" : "ghost"}`} onClick={() => setCount(n)}>{n}</button>
+          ))}
+        </div>
+        {teams && (
+          <>
+            <label>Teams</label>
+            <div className="seg">
+              {TEAM_PICKS.map((k) => (
+                <button key={k} className={`small ${pick === k ? "on" : "ghost"}`} onClick={() => setPick(k)} title={TEAM_PICK_LABEL[k].hint}>
+                  {k === "choose" ? "" : "🎲 "}
+                  {TEAM_PICK_LABEL[k].label}
+                </button>
+              ))}
+            </div>
+            <p className="muted small">
+              {split}. {pick === "choose" ? "You can move bots between teams in the waiting room." : TEAM_PICK_LABEL[pick].hint}
+            </p>
+          </>
+        )}
+        <label>Rounds</label>
+        <div className="seg">
+          {ROUND_CHOICES.map((n) => (
+            <button key={n} className={`small ${rounds === n ? "on" : "ghost"}`} onClick={() => setRounds(n)}>{n}</button>
           ))}
         </div>
         <label>Difficulty</label>
@@ -179,14 +243,14 @@ export function VsComputer({ go }: { go: Go }) {
             <button key={l} className={`small ${level === l ? "on" : "ghost"}`} onClick={() => setLevel(l)}>{CPU_LEVELS[l].label}</button>
           ))}
         </div>
-        <p className="muted small">Full knockout rules — garbage, bombs, KOs — against bots running in your browser.</p>
+        <p className="muted small">Full knockout rules — garbage, bombs, KOs, rankings after every round — against bots running in your browser. They chat too (you can mute them).</p>
         <div className="row">
           <button
             disabled={!name.trim()}
             onClick={() => {
               saveName(name.trim());
               const c = createRoomCredentials();
-              go(`#/room?${new URLSearchParams({ r: c.roomCode, k: c.secret, e: String(c.expiresAt), m: "cpu", bots: String(count), lvl: level })}`);
+              go(`#/room?${new URLSearchParams({ r: c.roomCode, k: c.secret, e: String(c.expiresAt), m: "cpu", bots: String(count), lvl: level, teams: teams ? "1" : "0", pick, rounds: String(rounds) })}`);
             }}
           >
             Battle
@@ -312,6 +376,10 @@ export function SettingsScreen({ go }: { go: Go }) {
         <label>Nostr relays (space-separated, blank = defaults)</label>
         <input value={s.relayUrls} placeholder="wss://relay.example" onChange={(e) => set("relayUrls", e.target.value)} />
         <p className="muted small">Keyboard: ←/→ move · ↓ soft drop · Space hard drop · ↑/X rotate CW · Z rotate CCW · C/Shift hold</p>
+
+        <h3>About</h3>
+        <p className="muted small">Stack Knockout is free, with no ads and no accounts. If you'd like to support it:</p>
+        <KofiLink compact />
         <div className="row">
           <button
             onClick={() => {

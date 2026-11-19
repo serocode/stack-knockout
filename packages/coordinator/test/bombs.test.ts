@@ -18,13 +18,13 @@ describe("bomb garbage rules", () => {
     expect(c.get("ben").coord.setOptions(opts)).toBe(false); // not the host
     expect(c.get("ana").coord.setOptions(opts)).toBe(true);
     c.run(300);
-    for (const n of c.alive()) expect(n.coord.view().state!.options).toEqual(opts);
+    for (const n of c.alive()) expect(n.coord.view().state!.options).toMatchObject(opts);
 
     c.startMatch("ana");
     expect(c.get("ana").coord.setOptions({ ...opts, bombs: "off" })).toBe(false); // locked mid-match
     for (const n of c.alive()) {
       const m = n.coord.view().state!.match!;
-      expect(m.options).toEqual(opts);
+      expect(m.options).toMatchObject(opts);
       for (const pid of m.participants) expect(m.players[pid]!.sim.s.bombs).toEqual({ blast: "line", bonus: 2 });
     }
 

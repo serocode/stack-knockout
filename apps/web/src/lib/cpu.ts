@@ -14,9 +14,24 @@ export const CPU_LEVELS: Record<CpuLevel, { label: string; pieceMs: number; skil
 };
 export const isCpuLevel = (v: unknown): v is CpuLevel => typeof v === "string" && v in CPU_LEVELS;
 
-export const MAX_CPU = 5;
-const NAMES = ["Byte", "Glitch", "Pixel", "Turbo", "Widget", "Sprocket", "Nibble", "Gizmo"];
+/** Up to 9 bots, so you can fill a 10-player room (5 v 5). */
+export const MAX_CPU = 9;
+const NAMES = ["Byte", "Glitch", "Pixel", "Turbo", "Widget", "Sprocket", "Nibble", "Gizmo", "Servo", "Quark", "Rivet"];
 const BOT_AVATARS = ["🤖", "👾", "⚡", "🔥", "🌙", "🦖", "🐙", "🐯"];
+
+/** Things bots say in chat. Kept friendly; bots never spam (see BotChat). */
+const LINES = {
+  hello: ["hi!", "hey 👋", "glhf", "ready when you are", "let's go"],
+  start: ["glhf", "good luck!", "here we go", "😤"],
+  quad: ["4 lines 💥", "boom", "clean!", "stack goes brrr"],
+  ko: ["got one 🥊", "ko!", "sorry 😅", "next!"],
+  out: ["argh", "gg", "too fast for me", "I'll get you next round"],
+  win: ["gg!", "gg wp", "that was close", "🏆"],
+  lose: ["gg", "gg wp", "rematch?", "well played"],
+  team: ["nice one team", "cover me!", "focus their strongest", "🤝"],
+  reply: ["gg", "😄", "lol", "true", "👍"],
+};
+type LineKind = keyof typeof LINES;
 /** Only cosmetics anyone can use (no tier unlock), so bots never flaunt rewards. */
 const FREE = <T extends object>(l: readonly T[]): T[] => l.filter((o) => !("tier" in o && o.tier));
 
@@ -32,6 +47,8 @@ interface Bot {
   dueAt: number;
   plan: Placement | null;
   planHash: number;
+  /** Last time this bot said something. */
+  saidAt: number;
 }
 
 const pickOf = <T,>(list: readonly T[], seed: number): T => list[seed % list.length]!;
@@ -91,8 +108,68 @@ export class CpuOpponents {
     const mesh = new Mesh({ transport: this.net.createTransport(`cpu-${pid}`), clock: realClock, roomId: this.roomId, secret: this.secret, playerId: pid });
     const seed = hashString(pid) >>> 0;
     const coord = new Coordinator({ mesh, clock: realClock, name, create: false, cosmetics: botLook(seed) });
-    this.bots.push({ name, coord, rng: seed || 1, readyAskedAt: -Infinity, planIdx: -1, showAt: 0, dueAt: 0, plan: null, planHash: 0 });
+    const bot: Bot = { name, coord, rng: seed || 1, readyAskedAt: -Infinity, planIdx: -1, showAt: 0, dueAt: 0, plan: null, planHash: 0, saidAt: -Infinity };
+    this.bots.push(bot);
+    this.listen(bot);
     return true;
+  }
+
+  /** Bot chatter: occasional, reactive, rate-limited per bot and across all bots. */
+  chatty = true;
+  private roomSaidAt = -Infinity;
+
+  private say(b: Bot, kind: LineKind, chance: number, delayMs = 600 + Math.random() * 1400): void {
+    if (!this.chatty || this.closed || Math.random() > chance) return;
+    const now = performance.now();
+    if (now - b.saidAt < 6000 || now - this.roomSaidAt < 1800) return;
+    b.saidAt = now;
+    this.roomSaidAt = now;
+    const list = LINES[kind];
+    const text = list[Math.floor(Math.random() * list.length)]!;
+    window.setTimeout(() => {
+      if (!this.closed && this.bots.includes(b)) b.coord.sendChat(text, kind === "team");
+    }, delayMs);
+  }
+
+  private listen(b: Bot): void {
+    const me = b.coord.playerId;
+    let greeted = false;
+    b.coord.on((e) => {
+      if (e.kind === "chat") {
+        // Answer people (not other bots) now and then, more often when greeted.
+        if (e.message.from === me || this.isBot(e.message.from)) return;
+        const t = e.message.text.toLowerCase();
+        if (/\b(hi|hey|hello|yo)\b/.test(t)) this.say(b, "hello", 0.5);
+        else if (/\bgg\b/.test(t)) this.say(b, "lose", 0.5);
+        else this.say(b, "reply", 0.12);
+        return;
+      }
+      if (e.kind !== "effect") return;
+      const f = e.effect;
+      switch (f.kind) {
+        case "joined":
+          if (f.playerId === me && !greeted) {
+            greeted = true;
+            this.say(b, "hello", 0.35, 1500);
+          }
+          break;
+        case "match-start":
+          this.say(b, b.coord.teamChatAvailable() && Math.random() < 0.4 ? "team" : "start", 0.15);
+          break;
+        case "lock":
+          if (f.playerId === me && f.result.lines === 4) this.say(b, "quad", 0.25);
+          break;
+        case "ko":
+          if (f.by === me) this.say(b, "ko", 0.35);
+          else if (f.victim === me) this.say(b, "out", 0.3);
+          break;
+        case "match-end": {
+          const won = f.result.winner === me || (f.result.winnerTeam !== null && b.coord.teamOf(me) === f.result.winnerTeam);
+          this.say(b, won ? "win" : "lose", 0.35, 900 + Math.random() * 1500);
+          break;
+        }
+      }
+    });
   }
 
   /** Removes the most recently added bot (lobby only, or it forfeits). */

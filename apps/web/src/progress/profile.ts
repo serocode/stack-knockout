@@ -24,6 +24,10 @@ export interface Stats {
   bestScore: number;
   bestMatchPlayers: number;
   attackSent: number;
+  teamWins: number;
+  seriesPlayed: number;
+  seriesWins: number;
+  mvps: number;
 }
 
 export interface Profile {
@@ -57,7 +61,13 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: "ko25", name: "Heavyweight", desc: "25 knockouts in total", icon: "💥", test: (p) => p.stats.kos >= 25 },
   { id: "first-win", name: "Champion", desc: "Win a multiplayer match", icon: "🏅", test: (p) => p.stats.wins >= 1 },
   { id: "wins10", name: "Dynasty", desc: "Win 10 matches", icon: "👑", test: (p) => p.stats.wins >= 10 },
-  { id: "survivor", name: "Last one standing", desc: "Win a full 6-player match", icon: "🛡️", test: (p) => p.stats.bestMatchPlayers >= 6 },
+  { id: "survivor", name: "Last one standing", desc: "Win a free-for-all of 6 or more", icon: "🛡️", test: (p) => p.stats.bestMatchPlayers >= 6 },
+  { id: "full-house", name: "Full house", desc: "Win a 10-player free-for-all", icon: "🏟️", test: (p) => p.stats.bestMatchPlayers >= 10 },
+  { id: "team-win", name: "Squad goals", desc: "Win a team match", icon: "🤝", test: (p) => p.stats.teamWins >= 1 },
+  { id: "team-win10", name: "Band of ten", desc: "Win 10 team matches", icon: "🎖️", test: (p) => p.stats.teamWins >= 10 },
+  { id: "series-win", name: "Series champion", desc: "Top the standings of a multi-round series", icon: "🏆", test: (p) => p.stats.seriesWins >= 1 },
+  { id: "mvp", name: "MVP", desc: "Most points on the winning side of a team series", icon: "⭐", test: (p) => p.stats.mvps >= 1 },
+  { id: "series5", name: "Marathoner", desc: "Finish 5 multi-round series", icon: "🏃", test: (p) => p.stats.seriesPlayed >= 5 },
   { id: "score10k", name: "High roller", desc: "Score 10,000 in one game", icon: "📈", test: (p) => p.stats.bestScore >= 10_000 },
   { id: "score50k", name: "Untouchable", desc: "Score 50,000 in one game", icon: "🚀", test: (p) => p.stats.bestScore >= 50_000 },
   { id: "lines1000", name: "Line machine", desc: "Clear 1,000 lines in total", icon: "🏗️", test: (p) => p.stats.lines >= 1000 },
@@ -66,6 +76,7 @@ export const ACHIEVEMENTS: Achievement[] = [
 const EMPTY_STATS: Stats = {
   games: 0, wins: 0, kos: 0, lines: 0, quads: 0, tspins: 0, tspinTriples: 0, perfectClears: 0,
   maxCombo: 0, maxB2b: 0, bestScore: 0, bestMatchPlayers: 0, attackSent: 0,
+  teamWins: 0, seriesPlayed: 0, seriesWins: 0, mvps: 0,
 };
 
 const KEY = "tk.profile";
@@ -166,7 +177,7 @@ export function recordLock(r: { lines: number; tspin: "none" | "mini" | "full"; 
 }
 
 /** End of a game. `id` dedupes (match id, or a practice game id). */
-export function recordGame(g: { id: string; score: number; kos?: number; won?: boolean; players?: number; attackSent?: number }): void {
+export function recordGame(g: { id: string; score: number; kos?: number; won?: boolean; players?: number; attackSent?: number; team?: boolean }): void {
   if (current.counted.includes(g.id)) return;
   const s = { ...current.stats };
   s.games++;
@@ -175,9 +186,21 @@ export function recordGame(g: { id: string; score: number; kos?: number; won?: b
   s.attackSent += g.attackSent ?? 0;
   if (g.won) {
     s.wins++;
-    s.bestMatchPlayers = Math.max(s.bestMatchPlayers, g.players ?? 0);
+    if (g.team) s.teamWins++;
+    else s.bestMatchPlayers = Math.max(s.bestMatchPlayers, g.players ?? 0);
   }
   save({ ...current, careerScore: current.careerScore + Math.max(0, Math.floor(g.score)), stats: s, counted: [...current.counted, g.id].slice(-50) });
+}
+
+/** End of a multi-round series (counted once per series id). */
+export function recordSeries(g: { id: string; won: boolean; mvp: boolean }): void {
+  const key = `series:${g.id}`;
+  if (current.counted.includes(key)) return;
+  const s = { ...current.stats };
+  s.seriesPlayed++;
+  if (g.won) s.seriesWins++;
+  if (g.mvp) s.mvps++;
+  save({ ...current, stats: s, counted: [...current.counted, key].slice(-50) });
 }
 
 export function resetProfile(): void {

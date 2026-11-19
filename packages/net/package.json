@@ -5,13 +5,15 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./trystero": "./src/trystero-transport.ts"
+    "./trystero": "./src/trystero-transport.ts",
+    "./nostr-directory": "./src/nostr-directory.ts"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
     "@noble/ciphers": "^2.4.0",
     "@noble/hashes": "^2.4.0",
+    "@noble/secp256k1": "3.2.0",
     "trystero": "^0.26.0"
   }
 }

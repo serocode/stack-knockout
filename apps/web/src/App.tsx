@@ -13,6 +13,8 @@ import { Room } from "./screens/Room";
 import { Create, Join, Menu, SettingsScreen, Solo, VsComputer } from "./screens/Menus";
 import { MAX_CPU, isCpuLevel, type CpuLevel } from "./lib/cpu";
 import type { NetMode } from "./lib/session";
+import { MAX_ROUNDS, TEAM_PICKS, type TeamPick } from "@tk/coordinator";
+import { RoomBrowser } from "./screens/Rooms";
 
 /** Hash routing keeps invite secrets in the fragment and needs no server rewrites. */
 export function App({ hash }: { hash: string }) {
@@ -57,8 +59,17 @@ export function App({ hash }: { hash: string }) {
     const m = p.get("m");
     const mode: NetMode = m === "local" || m === "cpu" ? m : "online";
     // Computer opponents live only in this tab, so a cpu room is always created fresh.
-    const cpu = mode === "cpu" ? { count: Math.min(MAX_CPU, Math.max(1, Number(p.get("bots")) || 1)), level: isCpuLevel(p.get("lvl")) ? (p.get("lvl") as CpuLevel) : ("medium" as const) } : undefined;
-    return { creds, mode, create: mode === "cpu" || p.get("new") === "1", cpu };
+    const cpu =
+      mode === "cpu"
+        ? {
+            count: Math.min(MAX_CPU, Math.max(1, Number(p.get("bots")) || 1)),
+            level: isCpuLevel(p.get("lvl")) ? (p.get("lvl") as CpuLevel) : ("medium" as const),
+            teams: p.get("teams") === "1",
+            teamPick: TEAM_PICKS.includes(p.get("pick") as TeamPick) ? (p.get("pick") as TeamPick) : ("choose" as const),
+            rounds: Math.min(MAX_ROUNDS, Math.max(1, Number(p.get("rounds")) || 1)),
+          }
+        : undefined;
+    return { creds, mode, create: mode === "cpu" || p.get("new") === "1", cpu, listed: p.get("list") === "1" };
   }, [hash, path]);
 
   // After creating, drop the "new" flag so a reload rejoins instead of re-creating.
@@ -66,6 +77,7 @@ export function App({ hash }: { hash: string }) {
     if (room?.create) {
       const p = new URLSearchParams(hash.split("?")[1] ?? "");
       p.delete("new");
+      p.delete("list");
       history.replaceState(null, "", `#/room?${p.toString()}`);
     }
   }, [room, hash]);
@@ -77,7 +89,7 @@ export function App({ hash }: { hash: string }) {
       go(`#/join?${new URLSearchParams({ r: room.creds.roomCode, k: room.creds.secret, e: String(room.creds.expiresAt) })}`);
       return null;
     }
-    return <Room key={`${room.creds.roomCode}-${room.mode}`} creds={room.creds} mode={room.mode} name={name} create={room.create} cpu={room.cpu} go={go} />;
+    return <Room key={`${room.creds.roomCode}-${room.mode}`} creds={room.creds} mode={room.mode} name={name} create={room.create} cpu={room.cpu} listed={room.listed} go={go} />;
   }
   switch (path) {
     case "#/create":
@@ -86,6 +98,8 @@ export function App({ hash }: { hash: string }) {
       return <Join go={go} hash={hash} />;
     case "#/cpu":
       return <VsComputer go={go} />;
+    case "#/rooms":
+      return <RoomBrowser go={go} />;
     case "#/solo":
       return <Solo go={go} />;
     case "#/lab":
@@ -110,7 +124,7 @@ export function Shell() {
     return () => window.removeEventListener("hashchange", on);
   }, []);
   const path = hash.split("?")[0] ?? "#/";
-  const calm = ["#/", "", "#/create", "#/join", "#/cpu", "#/settings", "#/profile", "#/customize"].includes(path);
+  const calm = ["#/", "", "#/create", "#/join", "#/cpu", "#/rooms", "#/settings", "#/profile", "#/customize"].includes(path);
   return (
     <>
       {calm && <Backdrop />}

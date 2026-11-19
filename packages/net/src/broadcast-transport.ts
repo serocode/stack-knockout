@@ -10,7 +10,7 @@ type Frame =
   | { k: "msg"; from: string; to: string[] | null; ch: Channel; d: string };
 
 /**
- * Same-device transport over BroadcastChannel. Lets you open up to six tabs on
+ * Same-device transport over BroadcastChannel. Lets you open up to ten tabs on
  * one machine and exercise the real mesh + coordinator (including host
  * migration by closing tabs) with no internet and no signaling relay.
  */

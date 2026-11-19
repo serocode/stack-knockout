@@ -1,6 +1,7 @@
 # Stack Knockout — Architecture
 
-Backend-free, peer-to-peer, up to six players, with automatic host migration.
+Backend-free, peer-to-peer, up to ten players (free-for-all or up to 5 v 5
+teams), with automatic host migration.
 Static frontend on Vercel; no game server, no database, no accounts.
 
 This document answers the eight "before writing code" questions in spec §14 and
@@ -41,7 +42,7 @@ conventional.
 ## 3. Networking architecture (spec §14.3)
 
 **Full mesh.** Every peer holds one WebRTC connection to every other peer
-(≤ 15 links for 6 players). Gameplay never touches the signaling relay.
+(≤ 45 links for 10 players). Gameplay never touches the signaling relay.
 
 **Logical channels** (`packages/net/src/transport.ts`), each with its own size
 cap and token-bucket rate limit in the Mesh:
@@ -52,7 +53,7 @@ cap and token-bucket rate limit in the Mesh:
 | `crit` | log entries, placements, elections, state sync | reliable, ordered, de-duplicated by message id |
 | `state` | acknowledgements | reliable |
 | `hb` | heartbeats (epoch, host, last applied seq, commit index, own ping to host), 1 Hz ping/pong | reliable |
-| `viz` | coaching suggestions, callouts | reliable, non-critical |
+| `viz` | coaching suggestions, callouts, room chat | reliable, non-critical |
 | `live` | falling-piece positions (≤20 Hz) and provisional locks | **unordered, no retransmits**, newest wins |
 
 Trystero multiplexes these over one reliable, ordered data channel per peer.
@@ -118,7 +119,7 @@ There is **no room registry**. A room exists only while at least one peer is in 
 * **Join:** link (`/#/join?r=CODE&k=KEY&e=EXPIRY` — the fragment never reaches
   any server) or manual code + key. The joiner subscribes to the topic,
   authenticates with every peer, then sends `join` until a host admits it
-  (≤6, not closed) and replies with a full state sync. It then connects to
+  (≤10, not closed, not kicked) and replies with a full state sync. It then connects to
   everyone (mesh) and appears in the lobby.
 * **Expired invite:** refused client-side (convenience only — anyone with the
   key could edit the timestamp).
@@ -139,9 +140,10 @@ All authoritative state is one deterministic state machine
 (`coordinator/src/state.ts`) driven by an append-only log. Only the host
 appends; everyone applies the same entries in the same order and reaches the
 same state hash. Entries: `join, presence, leave, ready, cosmetics, start, go,
-place, target, options, end, rematch, close, noop`. `options` holds the
-host's lobby settings (bomb garbage). They are copied into the match at
-`start`, so they can't change mid-game. Bomb positions are drawn from the
+place, target, options, team, kick, next, end, rematch, close, noop`.
+`options` holds the host's waiting-room settings (mode, rounds, public
+listing, room name, bomb garbage). They are copied into the match at `start`,
+so they can't change mid-game. Bomb positions are drawn from the
 match RNG when garbage is ordered, so every peer gets the same board.
 
 Every authoritative message carries **match id, host id, host epoch, sequence
@@ -251,6 +253,52 @@ matters here: your own board is simulated locally and never waits, but
 opponents' placements, garbage and KOs pass through the host before they
 reach you.
 
+### Teams and series
+
+* **Teams.** Every roster entry carries a team (1 or 2), balanced on `join`;
+  `team` entries move players (max 5 per side). When the room plays teams,
+  `start` freezes a `pid → team` map into the match. With `teamPick` set to
+  `random` (drawn once per series) or `round` (drawn before every round), the
+  map comes from `drawTeams`: a Fisher–Yates shuffle seeded by the match seed,
+  dealt alternately, so every peer computes the same even split without any
+  extra messages. The draw is written back to the roster so the waiting room
+  shows it. A series with redrawn teams is marked `mixed` and ranked by player. Target selection skips
+  teammates, a manual `target` naming a teammate is rejected, a KO is never
+  credited to a teammate, and the match ends when only one team has players
+  alive (all its survivors share first place; `MatchResult.winnerTeam`).
+* **Series.** `start` from the waiting room opens a `Series` of
+  `options.rounds` rounds; every match end (knockout or no-contest) folds the
+  round's rankings and points into replicated standings, so every peer shows
+  the same table and a migrated host carries on mid-series. `next` starts the
+  following round straight from the results screen (late joiners included,
+  disconnected players sit it out). The host appends it after a 15 s
+  intermission, measured from when the match end is committed; a new host
+  restarts the timer. `rematch` before the last round ends the series early.
+* **Kick.** `kick` removes a player like `leave` (forfeit mid-match) and adds
+  them to a replicated `kicked` list; the host refuses their `join` from then on.
+  It is a membership change, so it follows the one-at-a-time rule.
+
+### Room chat
+
+Advisory and never in the log, like callouts. `chat` (≤ 200 chars, control and
+bidi-override characters stripped) goes out on `viz`, to everyone or, in team
+rooms, only to teammates; receivers check roster membership and team, and
+throttle each sender (5 per 5 s). Each peer keeps its own last 120 messages.
+When the host admits a new member it sends `chat_hist` (the last 30 public
+messages) on `crit`; only the host's copy is accepted, once.
+
+### Public room directory ("waiting rooms")
+
+`packages/net/src/directory.ts`. Still no server: the current host of a room
+with `options.listed` re-announces `{code, key, title, players, mode, round…}`
+every 4 s, and browsers drop listings not heard for 15 s (or on an explicit
+withdrawal). Online rooms use signed **ephemeral** Nostr events (kind 21377,
+tag `stack-knockout-rooms-v1`) sent straight to the relays over websockets —
+no WebRTC, so browsing costs nothing for the listed rooms — and same-device
+rooms use a BroadcastChannel. Every member runs the announcer and only the
+current host publishes, so a migrated room stays listed. Listings are
+validated like any payload.
+
 ### Coaching and callouts
 
 Advisory only, and never in the log. `sug` (a hard-drop spot for a player's
@@ -285,8 +333,14 @@ so the resulting Placement goes through normal host validation. Tested in
   are the managed fallback.
 * **NAT.** Without TURN, some connection pairs (symmetric NAT,
   some mobile carriers, strict corporate networks) fail outright.
-* **Mesh scale.** Six players = 15 connections; the host uploads each log
-  entry five times. Fine at this size, the reason the cap is six.
+* **Mesh scale.** Ten players = 45 connections; the host uploads each log
+  entry nine times and every peer validates nine boards' worth of log. Fine
+  for friends on decent connections; weak phones or uplinks feel it first at
+  9–10 players. This is why the cap stops at 5 v 5.
+* **Public listings.** A listed room's invite key is on public relays, so
+  anyone can join it. A kicked player can return under a fresh identity (new
+  browser profile); kicks bind to player ids, not people. Relays can drop or be
+  flooded with fake listings; joining a fake one just finds nobody there.
 * **Tab lifecycle.** Mobile browsers freeze background tabs; switching apps
   mid-match looks like a disconnect to everyone else.
 
@@ -328,7 +382,8 @@ before any cosmetics.
 | # | Scenario | Where |
 |---|---|---|
 | 1 | Two players establish a match | `migration.test.ts` |
-| 2–3 | Six join; seventh rejected | `migration.test.ts` |
+| 2–3 | Ten join; eleventh rejected | `migration.test.ts` |
+| — | Teams, 5-per-side cap, series totals, auto next round, chat, kick | `rooms.test.ts`, `net/test/directory.test.ts` |
 | 4–5 | Temporary disconnect / reconnect (and page reload) with board restored | `migration.test.ts` |
 | 6 | Host closes tab | `migration.test.ts`, browser e2e |
 | 7 | Host loses connectivity; rejoins as regular player | `migration.test.ts` |

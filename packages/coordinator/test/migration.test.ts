@@ -20,15 +20,16 @@ describe("rooms and lobby", () => {
     expect(piecesOf(c, "ana", "ben")).toBeGreaterThan(5);
   });
 
-  it("2/3. six players join and a seventh is rejected", () => {
+  it("2/3. ten players join and an eleventh is rejected", () => {
     const c = new Cluster();
-    c.lobby(SIX);
-    expect(c.get("ana").coord.view().state!.roster.map((r) => r.name)).toEqual(SIX);
-    const gus = c.add("gus");
-    c.runUntil(() => gus.coord.view().mode === "rejected");
-    expect(gus.coord.view().rejectedReason).toBe("full");
+    const TEN = [...SIX, "gus", "hal", "ivy", "jon"];
+    c.lobby(TEN);
+    expect(c.get("ana").coord.view().state!.roster.map((r) => r.name)).toEqual(TEN);
+    const kim = c.add("kim");
+    c.runUntil(() => kim.coord.view().mode === "rejected");
+    expect(kim.coord.view().rejectedReason).toBe("full");
     c.settle();
-    expect(c.get("ana").coord.view().state!.roster).toHaveLength(6);
+    expect(c.get("ana").coord.view().state!.roster).toHaveLength(10);
   });
 
   it("17. different cosmetics coexist and never affect simulation", () => {

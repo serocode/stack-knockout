@@ -1,4 +1,4 @@
-import { Coordinator } from "@tk/coordinator";
+import { Coordinator, type TeamPick } from "@tk/coordinator";
 import { BroadcastTransport, Mesh, newPlayerId, realClock, signalingRoomId, type RoomCredentials, type Transport } from "@tk/net";
 import { CpuOpponents, type CpuLevel } from "./cpu";
 import { playerIdFor } from "./identity";
@@ -25,7 +25,15 @@ const APP_ID = "stack-knockout-v1";
  * Wires transport -> mesh -> coordinator. "online" uses WebRTC with Trystero's
  * Nostr signaling; "local" uses BroadcastChannel between tabs on one device.
  */
-export async function openSession(opts: { creds: RoomCredentials; mode: NetMode; name: string; create: boolean; cpu?: { count: number; level: CpuLevel } }): Promise<Session> {
+export interface CpuSetup {
+  count: number;
+  level: CpuLevel;
+  teams?: boolean;
+  teamPick?: TeamPick;
+  rounds?: number;
+}
+
+export async function openSession(opts: { creds: RoomCredentials; mode: NetMode; name: string; create: boolean; cpu?: CpuSetup; listed?: boolean }): Promise<Session> {
   if (opts.mode === "cpu") return openCpuSession({ ...opts, cpu: opts.cpu ?? { count: 1, level: "medium" } });
   const { playerId, release } = playerIdFor(opts.creds.roomCode, opts.mode === "local");
   let transport: Transport;
@@ -70,6 +78,8 @@ export async function openSession(opts: { creds: RoomCredentials; mode: NetMode;
     // Relays can take several seconds to introduce peers; give an existing host time to answer.
     ...(isCreator && !opts.create ? { hostIfAloneAfterMs: opts.mode === "local" ? 4000 : 9000 } : {}),
   });
+  // Chosen on the Create screen: show the new room in Waiting rooms.
+  if (opts.create && opts.listed) coord.setOptions({ listed: true });
 
   // Closing/reloading the tab tears down the peer connections so others notice
   // immediately (no heartbeat timeout), but we do NOT send "leaving": the
@@ -115,7 +125,7 @@ function turnConfig(s: ReturnType<typeof loadSettings>): { urls: string[]; usern
  * Practice against the computer: the player hosts a room on an in-memory
  * network in this tab and bot coordinators join it. No signaling, no peers.
  */
-function openCpuSession(opts: { creds: RoomCredentials; name: string; cpu: { count: number; level: CpuLevel } }): Session {
+function openCpuSession(opts: { creds: RoomCredentials; name: string; cpu: CpuSetup }): Session {
   const cpu = new CpuOpponents(opts.creds.roomCode, opts.creds.secret, opts.cpu.level, opts.cpu.count);
   const playerId = newPlayerId();
   const mesh = new Mesh({ transport: cpu.net.createTransport(`me-${playerId}`), clock: realClock, roomId: opts.creds.roomCode, secret: opts.creds.secret, playerId });
@@ -126,6 +136,8 @@ function openCpuSession(opts: { creds: RoomCredentials; name: string; cpu: { cou
     create: true,
     cosmetics: toWire(getPrefs().cosmetics, tierForScore(getProfile().careerScore).id),
   });
+  // Same room rules as an online room; the player can still change them in the waiting room.
+  coord.setOptions({ teams: !!opts.cpu.teams, teamPick: opts.cpu.teamPick ?? "choose", rounds: opts.cpu.rounds ?? 1 });
   const unsubPrefs = shareCosmetics(coord);
   return {
     creds: opts.creds,
